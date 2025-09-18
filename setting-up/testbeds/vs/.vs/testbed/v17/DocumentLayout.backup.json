@@ -1,0 +1,54 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "C:\\Users\\jjong22\\Desktop\\CS415\\setting-up\\testbeds\\vs\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{01BC118A-8C54-4A2E-8996-1EAB03EFF4F3}|testbed\\testbed.vcxproj|C:\\Users\\jjong22\\Desktop\\CS415\\setting-up\\testbeds\\vs\\testbed\\assn1.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{01BC118A-8C54-4A2E-8996-1EAB03EFF4F3}|testbed\\testbed.vcxproj|solutionrelative:testbed\\assn1.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{01BC118A-8C54-4A2E-8996-1EAB03EFF4F3}|testbed\\testbed.vcxproj|C:\\Users\\jjong22\\Desktop\\CS415\\setting-up\\testbeds\\vs\\testbed\\Example_1.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}",
+      "RelativeMoniker": "D:0:0:{01BC118A-8C54-4A2E-8996-1EAB03EFF4F3}|testbed\\testbed.vcxproj|solutionrelative:testbed\\Example_1.cpp||{D0E1A5C6-B359-4E41-9B60-3365922C2A22}"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 1,
+          "Children": [
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "Example_1.cpp",
+              "DocumentMoniker": "C:\\Users\\jjong22\\Desktop\\CS415\\setting-up\\testbeds\\vs\\testbed\\Example_1.cpp",
+              "RelativeDocumentMoniker": "testbed\\Example_1.cpp",
+              "ToolTip": "C:\\Users\\jjong22\\Desktop\\CS415\\setting-up\\testbeds\\vs\\testbed\\Example_1.cpp",
+              "RelativeToolTip": "testbed\\Example_1.cpp",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAUAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2025-09-10T10:04:18.156Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "assn1.cpp",
+              "DocumentMoniker": "C:\\Users\\jjong22\\Desktop\\CS415\\setting-up\\testbeds\\vs\\testbed\\assn1.cpp",
+              "RelativeDocumentMoniker": "testbed\\assn1.cpp",
+              "ToolTip": "C:\\Users\\jjong22\\Desktop\\CS415\\setting-up\\testbeds\\vs\\testbed\\assn1.cpp",
+              "RelativeToolTip": "testbed\\assn1.cpp",
+              "ViewState": "AgIAAFYBAAAAAAAAAAAAAC0AAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000677|",
+              "WhenOpened": "2025-09-10T09:30:55.589Z",
+              "EditorCaption": ""
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
