@@ -1,0 +1,16 @@
+# Simple Jet Model for Player (jet.obj)
+# Vertices (v)
+v 0.0 1.0 0.0      # Nose (V1)
+v 1.0 -1.0 0.0     # Right Wing Tip (V2)
+v -1.0 -1.0 0.0    # Left Wing Tip (V3)
+v 0.0 -0.5 -1.0    # Tail End (V4)
+
+# Faces (f)
+# Main Body - Front triangle
+f 1 2 3
+
+# Right Side
+f 1 4 2
+
+# Left Side
+f 1 3 4
