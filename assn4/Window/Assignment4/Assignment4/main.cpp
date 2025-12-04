@@ -135,7 +135,7 @@ struct DirectionalLight {
     Vec3 specular;
 
     DirectionalLight()
-        : direction(0.5f, -1.0f, 0.8f),
+        : direction(0.5f, 0.0f, 0.8f),
         ambient(0.2f, 0.2f, 0.2f),
         diffuse(0.7f, 0.7f, 0.7f),
         specular(0.5f, 0.5f, 0.5f) {
@@ -1388,6 +1388,8 @@ public:
             glm::vec3 lightDir = dirLight.direction.toGLM();
             glm::mat4 shadowMat = computeShadowMatrix(lightDir);
             glm::mat4 shadowModel = shadowMat * modelMatrix;
+            shadowModel = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, 0.02f)) * shadowModel;
+
             glm::mat4 shadowMVP = projectionMatrix * viewMatrix * shadowModel;
 
             glUseProgram(shadowShaderProgram);
@@ -2020,10 +2022,29 @@ glm::mat4 computeShadowMatrix(const glm::vec3& lightDir) {
     float dotPL = glm::dot(plane, L);
 
     glm::mat4 S(1.0f);
-    S[0][0] = dotPL - L.x * plane.x; S[0][1] = -L.x * plane.y; S[0][2] = -L.x * plane.z; S[0][3] = -L.x * plane.w;
-    S[1][0] = -L.y * plane.x; S[1][1] = dotPL - L.y * plane.y; S[1][2] = -L.y * plane.z; S[1][3] = -L.y * plane.w;
-    S[2][0] = -L.z * plane.x; S[2][1] = -L.z * plane.y; S[2][2] = dotPL - L.z * plane.z; S[2][3] = -L.z * plane.w;
-    S[3][0] = -L.w * plane.x; S[3][1] = -L.w * plane.y; S[3][2] = -L.w * plane.z; S[3][3] = dotPL - L.w * plane.w;
+    // 1열 (Column 0): 입력 x가 결과 x, y, z, w에 미치는 영향
+    S[0][0] = dotPL - L.x * plane.x;
+    S[0][1] = -L.y * plane.x;
+    S[0][2] = -L.z * plane.x;
+    S[0][3] = -L.w * plane.x;
+
+    // 2열 (Column 1): 입력 y가 결과 x, y, z, w에 미치는 영향
+    S[1][0] = -L.x * plane.y;
+    S[1][1] = dotPL - L.y * plane.y;
+    S[1][2] = -L.z * plane.y;
+    S[1][3] = -L.w * plane.y;
+
+    // 3열 (Column 2): 입력 z가 결과 x, y, z, w에 미치는 영향
+    S[2][0] = -L.x * plane.z;
+    S[2][1] = -L.y * plane.z;
+    S[2][2] = dotPL - L.z * plane.z;
+    S[2][3] = -L.w * plane.z;
+
+    // 4열 (Column 3): 입력 w(1)가 결과 x, y, z, w에 미치는 영향 (이동/Translation)
+    S[3][0] = -L.x * plane.w;
+    S[3][1] = -L.y * plane.w;
+    S[3][2] = -L.z * plane.w;
+    S[3][3] = dotPL - L.w * plane.w;
 
     return S;
 }
