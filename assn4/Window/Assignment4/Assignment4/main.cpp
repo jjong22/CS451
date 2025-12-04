@@ -81,7 +81,7 @@ const float GAME_NEAR = -2.0f;
 const float GAME_FAR = 2.0f;
 
 // Entity sizes
-const float PLAYER_SIZE = 0.80f;
+const float PLAYER_SIZE = 0.30f;
 const float BULLET_SIZE = 0.08f;
 const float ATTACK_SIZE = 0.10f;
 const float ENEMY_SIZE = 0.80f;
@@ -291,317 +291,243 @@ public:
             return false;
         }
 
-        // Temporary storage for OBJ data
+        // 임시 저장소
         std::vector<Vertex> tempVertices;
         std::vector<Vec3> tempNormals;
         std::vector<std::pair<float, float>> tempTexCoords;
 
+        // 1. 기존 데이터 깨끗이 비우기 (중복 방지)
+        vertices.clear();
+        faces.clear();
+        normals.clear();
+        indices.clear();
+
+        // 버퍼용 데이터도 초기화
+        vertexData.clear();
+        normalData.clear();
+        texCoords.clear(); // float vector
+
         std::string line;
         while (std::getline(file, line)) {
-            std::istringstream iss(line);
-            std::string type;
-            iss >> type;
-
-            if (type == "v") {
-                // Vertex position
+            if (line.substr(0, 2) == "v ") {
+                std::istringstream iss(line.substr(2));
                 Vertex vertex;
                 iss >> vertex.x >> vertex.y >> vertex.z;
                 tempVertices.push_back(vertex);
             }
-            else if (type == "vt") {
-                // Texture coordinate
+            else if (line.substr(0, 3) == "vt ") {
+                std::istringstream iss(line.substr(3));
                 float u, v;
                 iss >> u >> v;
                 tempTexCoords.push_back({ u, v });
             }
-            else if (type == "vn") {
-                // Vertex normal
+            else if (line.substr(0, 3) == "vn ") {
+                std::istringstream iss(line.substr(3));
                 Vec3 normal;
                 iss >> normal.x >> normal.y >> normal.z;
                 tempNormals.push_back(normal);
             }
-            // 기존의 else if (type == "f") 블록을 통째로 아래 내용으로 교체
+            else if (line.substr(0, 2) == "f ") {
+                std::string lineData = line.substr(2);
+                std::replace(lineData.begin(), lineData.end(), '\t', ' ');
 
-            else if (type == "f") {
-                // 한 줄에 있는 모든 정점 데이터를 읽음
+                std::istringstream iss(lineData);
                 std::vector<std::string> faceVerts;
                 std::string vertStr;
                 while (iss >> vertStr) {
                     faceVerts.push_back(vertStr);
                 }
 
-                // 삼각형(3개) 혹은 사각형(4개) 이상인 경우 처리
-                // (Triangle Fan 방식으로 쪼갭니다: 0-1-2, 0-2-3, 0-3-4 ...)
+                // 인덱스 보정 (음수 인덱스 지원)
+                auto fixIndex = [](int idx, int size) -> int {
+                    if (idx > 0) return idx - 1;
+                    if (idx < 0) return size + idx;
+                    return -1;
+                    };
+
+                // Triangulation (사각형 -> 삼각형 분할)
                 for (size_t i = 0; i < faceVerts.size() - 2; ++i) {
                     std::string vStr[3] = { faceVerts[0], faceVerts[i + 1], faceVerts[i + 2] };
 
+                    // face 정보는 나중에 쓰지 않더라도 파싱 로직 유지를 위해 남겨둠
                     Face face;
-                    int vIdx[3], vtIdx[3] = { -1,-1,-1 }, vnIdx[3] = { -1,-1,-1 };
+                    int vIdx[3], vts[3] = { -1,-1,-1 }, vns[3] = { -1,-1,-1 };
 
-                    // 3개의 정점 파싱
                     for (int j = 0; j < 3; ++j) {
                         size_t firstSlash = vStr[j].find('/');
-                        if (firstSlash == std::string::npos) {
-                            vIdx[j] = std::stoi(vStr[j]) - 1;
+                        size_t secondSlash = (firstSlash != std::string::npos) ? vStr[j].find('/', firstSlash + 1) : std::string::npos;
+
+                        int rawV = std::stoi(vStr[j]);
+                        vIdx[j] = fixIndex(rawV, (int)tempVertices.size());
+
+                        if (firstSlash != std::string::npos) {
+                            if (secondSlash == std::string::npos || secondSlash > firstSlash + 1) {
+                                std::string vtString = vStr[j].substr(firstSlash + 1, secondSlash - firstSlash - 1);
+                                if (!vtString.empty()) vts[j] = fixIndex(std::stoi(vtString), (int)tempTexCoords.size());
+                            }
                         }
-                        else {
-                            vIdx[j] = std::stoi(vStr[j].substr(0, firstSlash)) - 1;
-                            size_t secondSlash = vStr[j].find('/', firstSlash + 1);
-                            if (secondSlash == std::string::npos) {
-                                if (firstSlash + 1 < vStr[j].length())
-                                    vtIdx[j] = std::stoi(vStr[j].substr(firstSlash + 1)) - 1;
-                            }
-                            else {
-                                if (secondSlash > firstSlash + 1)
-                                    vtIdx[j] = std::stoi(vStr[j].substr(firstSlash + 1, secondSlash - firstSlash - 1)) - 1;
-                                if (secondSlash + 1 < vStr[j].length())
-                                    vnIdx[j] = std::stoi(vStr[j].substr(secondSlash + 1)) - 1;
-                            }
+                        if (secondSlash != std::string::npos) {
+                            std::string vnString = vStr[j].substr(secondSlash + 1);
+                            if (!vnString.empty()) vns[j] = fixIndex(std::stoi(vnString), (int)tempNormals.size());
                         }
                     }
 
+                    // Face 구조체에 저장 (디버깅용, 실제 렌더링엔 indices 사용)
                     face.v1 = vIdx[0]; face.v2 = vIdx[1]; face.v3 = vIdx[2];
-                    face.vt1 = vtIdx[0]; face.vt2 = vtIdx[1]; face.vt3 = vtIdx[2];
-                    face.vn1 = vnIdx[0]; face.vn2 = vnIdx[1]; face.vn3 = vnIdx[2];
-
                     faces.push_back(face);
+
+                    // === 2. 정점 중복 제거 및 인덱싱 (핵심) ===
+                    // 여기서 바로 vertices와 indices를 채웁니다.
+                    for (int j = 0; j < 3; ++j) {
+                        // 유효성 검사
+                        if (vIdx[j] < 0 || vIdx[j] >= (int)tempVertices.size()) vIdx[j] = 0;
+
+                        // 여기서 중복 검사를 생략하고 단순화(Vertex Explosion 방지 최우선)할 수도 있으나,
+                        // 텍스처/노말 매핑을 위해 중복 허용 방식으로 데이터를 평탄화(Flatten)합니다.
+                        // (복잡한 Map 중복제거 대신, 각 면의 정점을 고유한 정점으로 분리)
+
+                        Vertex v = tempVertices[vIdx[j]];
+                        vertices.push_back(v);
+
+                        // 텍스처 좌표 처리
+                        if (vts[j] >= 0 && vts[j] < (int)tempTexCoords.size()) {
+                            // setupBuffers에서 처리하기 위해 임시 저장 필요하지만
+                            // 구조가 복잡하므로 여기서는 단순화하여 vertices와 1:1 매칭되는 TexCoords 배열을 직접 만듭니다.
+                            // (class 멤버인 texCoords는 float vector이므로 나중에 채움)
+                        }
+
+                        // 노말 처리
+                        if (vns[j] >= 0 && vns[j] < (int)tempNormals.size()) {
+                            normals.push_back({ tempNormals[vns[j]].x, tempNormals[vns[j]].y, tempNormals[vns[j]].z });
+                        }
+                        else {
+                            normals.push_back({ 0,0,0 }); // 나중에 계산
+                        }
+
+                        // 인덱스 생성 (단순 순차 증가)
+                        indices.push_back((unsigned int)vertices.size() - 1);
+                    }
+
+                    // 텍스처 좌표는 별도로 vertices와 갯수를 맞춰줍니다.
+                    for (int j = 0; j < 3; ++j) {
+                        if (vts[j] >= 0 && vts[j] < (int)tempTexCoords.size()) {
+                            this->texCoords.push_back(tempTexCoords[vts[j]].first);
+                            this->texCoords.push_back(tempTexCoords[vts[j]].second);
+                        }
+                        else {
+                            // 기본 UV
+                            float u = 0.5f + atan2(tempVertices[vIdx[j]].z, tempVertices[vIdx[j]].x) / (2.0f * M_PI);
+                            float v = 0.5f - asin(tempVertices[vIdx[j]].y) / M_PI;
+                            this->texCoords.push_back(u);
+                            this->texCoords.push_back(v);
+                        }
+                    }
                 }
             }
         }
         file.close();
 
-        // (1) 일단 기존 데이터 비우기
-        vertices.clear();
-        normals.clear();
-        vertexData.clear();
-        normalData.clear();
-        texCoords.clear();
-        indices.clear();
-
-        // (2) (v, vt, vn) 조합을 key로 쓰기 위한 구조체
-        struct VertexKey {
-            int v, vt, vn;
-            bool operator<(const VertexKey& other) const {
-                if (v != other.v) return v < other.v;
-                if (vt != other.vt) return vt < other.vt;
-                return vn < other.vn;
-            }
-        };
-
-        std::map<VertexKey, unsigned int> vertexMap;
-        unsigned int nextIndex = 0;
-
-        // (3) faces를 돌면서 (v,vt,vn) 조합 기준으로 정점 재구성
-        for (const auto& face : faces) {
-            int vs[3] = { face.v1,  face.v2,  face.v3 };
-            int vts[3] = { face.vt1, face.vt2, face.vt3 };
-            int vns[3] = { face.vn1, face.vn2, face.vn3 };
-
-            for (int i = 0; i < 3; ++i) {
-                VertexKey key{ vs[i], vts[i], vns[i] };
-
-                auto it = vertexMap.find(key);
-                if (it == vertexMap.end()) {
-                    // 새 조합이면 새로운 정점 생성
-                    int vIdx = key.v;
-                    int vtIdx = key.vt;
-                    int vnIdx = key.vn;
-
-                    // 안전 체크
-                    if (vIdx < 0 || vIdx >= (int)tempVertices.size()) continue;
-
-                    const auto& pos = tempVertices[vIdx];
-                    glm::vec2 uv(0.0f, 0.0f);
-                    if (vtIdx >= 0 && vtIdx < (int)tempTexCoords.size()) {
-                        uv.x = tempTexCoords[vtIdx].first;
-                        uv.y = tempTexCoords[vtIdx].second;
-                    }
-                    glm::vec3 nor(0.0f, 0.0f, 1.0f);
-                    if (vnIdx >= 0 && vnIdx < (int)tempNormals.size()) {
-                        nor.x = tempNormals[vnIdx].x;
-                        nor.y = tempNormals[vnIdx].y;
-                        nor.z = tempNormals[vnIdx].z;
-                    }
-
-                    // vertices / normals 벡터에도 저장 (계산용)
-                    vertices.push_back({ pos.x, pos.y, pos.z });
-                    normals.push_back({ nor.x, nor.y, nor.z });
-
-                    // VBO용 배열 저장
-                    vertexData.push_back(pos.x);
-                    vertexData.push_back(pos.y);
-                    vertexData.push_back(pos.z);
-
-                    normalData.push_back(nor.x);
-                    normalData.push_back(nor.y);
-                    normalData.push_back(nor.z);
-
-                    texCoords.push_back(uv.x);
-                    texCoords.push_back(uv.y);
-
-                    unsigned int newIndex = nextIndex++;
-                    vertexMap[key] = newIndex;
-                    indices.push_back(newIndex);
-                }
-                else {
-                    // 이미 있는 (v,vt,vn) 조합이면 기존 인덱스 재사용
-                    indices.push_back(it->second);
-                }
-            }
-        }
-
         hasTexCoords = !tempTexCoords.empty();
+        std::cout << "Loaded " << filename << ": " << vertices.size() << " vertices." << std::endl;
 
-        std::cout << "Loaded " << filename << ": "
-            << vertices.size() << " unique vertices, "
-            << faces.size() << " faces, "
-            << tempTexCoords.size() << " texture coords" << std::endl;
-
-        // 노말이 없는 모델이면 여기서 다시 계산해도 됨 (있으면 normals 이미 채워짐)
-        if (tempNormals.empty()) {
-            calculateNormals(); // 필요 없으면 생략 가능
+        // 3. 노말이 없거나 부족하면 재계산
+        if (tempNormals.empty() || normals.size() != vertices.size()) {
+            calculateNormals();
         }
 
-        // 새로 구성한 데이터로 버퍼 생성
-        setupBuffers(tempTexCoords);  // 인자 없이 호출하도록 오버로드가 있다면 그 버전 사용
+        // 4. GPU 버퍼 생성 및 데이터 업로드
+        setupBuffers();
+
         return true;
     }
 
-    // ADDITIONAL GOAL 1: Calculate smooth normals
     void calculateNormals() {
-        normals.resize(vertices.size(), { 0, 0, 0 });
+        // vertices 개수에 맞춰 초기화
+        normals.assign(vertices.size(), { 0, 0, 0 });
 
-        // Calculate face normals and accumulate to vertices
-        for (const auto& face : faces) {
-            if (face.v1 >= vertices.size() || face.v2 >= vertices.size() || face.v3 >= vertices.size())
-                continue;
+        // indices를 이용해 삼각형 순회
+        for (size_t i = 0; i < indices.size(); i += 3) {
+            unsigned int idx1 = indices[i];
+            unsigned int idx2 = indices[i + 1];
+            unsigned int idx3 = indices[i + 2];
 
-            Vec3 v1(vertices[face.v1].x, vertices[face.v1].y, vertices[face.v1].z);
-            Vec3 v2(vertices[face.v2].x, vertices[face.v2].y, vertices[face.v2].z);
-            Vec3 v3(vertices[face.v3].x, vertices[face.v3].y, vertices[face.v3].z);
+            Vec3 v1(vertices[idx1].x, vertices[idx1].y, vertices[idx1].z);
+            Vec3 v2(vertices[idx2].x, vertices[idx2].y, vertices[idx2].z);
+            Vec3 v3(vertices[idx3].x, vertices[idx3].y, vertices[idx3].z);
 
             Vec3 edge1 = v2 - v1;
             Vec3 edge2 = v3 - v1;
 
-            // Cross product for normal
             Vec3 normal(
                 edge1.y * edge2.z - edge1.z * edge2.y,
                 edge1.z * edge2.x - edge1.x * edge2.z,
                 edge1.x * edge2.y - edge1.y * edge2.x
             );
 
-            // Accumulate to vertex normals
-            normals[face.v1].x += normal.x;
-            normals[face.v1].y += normal.y;
-            normals[face.v1].z += normal.z;
-
-            normals[face.v2].x += normal.x;
-            normals[face.v2].y += normal.y;
-            normals[face.v2].z += normal.z;
-
-            normals[face.v3].x += normal.x;
-            normals[face.v3].y += normal.y;
-            normals[face.v3].z += normal.z;
+            normals[idx1].x += normal.x; normals[idx1].y += normal.y; normals[idx1].z += normal.z;
+            normals[idx2].x += normal.x; normals[idx2].y += normal.y; normals[idx2].z += normal.z;
+            normals[idx3].x += normal.x; normals[idx3].y += normal.y; normals[idx3].z += normal.z;
         }
 
-        // Normalize all normals
-        for (auto& normal : normals) {
-            float len = sqrt(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
-            if (len > 0) {
-                normal.x /= len;
-                normal.y /= len;
-                normal.z /= len;
-            }
+        // 정규화
+        for (auto& n : normals) {
+            float len = sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+            if (len > 0) { n.x /= len; n.y /= len; n.z /= len; }
         }
     }
 
-    void setupBuffers(const std::vector<std::pair<float, float>>& fileTexCoords = {}) {
-        // Prepare vertex data
-        for (const auto& vertex : vertices) {
-            vertexData.push_back(vertex.x);
-            vertexData.push_back(vertex.y);
-            vertexData.push_back(vertex.z);
+    // setupBuffers: GPU에 데이터를 전송하는 역할만 수행 (데이터 생성 X)
+    void setupBuffers(const std::vector<std::pair<float, float>>& unused = {}) {
+        // 기존 데이터를 평탄화(Flatten)
+        vertexData.clear();
+        normalData.clear();
+
+        for (const auto& v : vertices) {
+            vertexData.push_back(v.x);
+            vertexData.push_back(v.y);
+            vertexData.push_back(v.z);
         }
 
-        // Prepare normal data
-        for (const auto& normal : normals) {
-            normalData.push_back(normal.x);
-            normalData.push_back(normal.y);
-            normalData.push_back(normal.z);
+        for (const auto& n : normals) {
+            normalData.push_back(n.x);
+            normalData.push_back(n.y);
+            normalData.push_back(n.z);
         }
 
-        // Prepare texture coordinates
-        if (!fileTexCoords.empty() && hasTexCoords) {
-            // Use texture coordinates from file
-            // Map per-vertex texture coordinates
-            texCoords.resize(vertices.size() * 2, 0.0f);
+        // texCoords는 loadOBJ에서 이미 채워져 있음 (flat array)
 
-            for (const auto& face : faces) {
-                if (face.vt1 >= 0 && face.vt1 < fileTexCoords.size()) {
-                    texCoords[face.v1 * 2 + 0] = fileTexCoords[face.vt1].first;
-                    texCoords[face.v1 * 2 + 1] = fileTexCoords[face.vt1].second;
-                }
-                if (face.vt2 >= 0 && face.vt2 < fileTexCoords.size()) {
-                    texCoords[face.v2 * 2 + 0] = fileTexCoords[face.vt2].first;
-                    texCoords[face.v2 * 2 + 1] = fileTexCoords[face.vt2].second;
-                }
-                if (face.vt3 >= 0 && face.vt3 < fileTexCoords.size()) {
-                    texCoords[face.v3 * 2 + 0] = fileTexCoords[face.vt3].first;
-                    texCoords[face.v3 * 2 + 1] = fileTexCoords[face.vt3].second;
-                }
-            }
-        }
-        else {
-            // Generate spherical UV mapping
-            for (const auto& vertex : vertices) {
-                float u = 0.5f + atan2(vertex.z, vertex.x) / (2.0f * M_PI);
-                float v = 0.5f - asin(vertex.y) / M_PI;
-                texCoords.push_back(u);
-                texCoords.push_back(v);
-            }
-        }
-
-        // Prepare index data
-        for (const auto& face : faces) {
-            indices.push_back(face.v1);
-            indices.push_back(face.v2);
-            indices.push_back(face.v3);
-        }
-
-        // Create VAO, VBO, EBO
-        glGenVertexArrays(1, &VAO);
-        glGenBuffers(1, &VBO);
-        glGenBuffers(1, &normalVBO);
-        glGenBuffers(1, &texCoordVBO);
-        glGenBuffers(1, &EBO);
+        if (VAO == 0) glGenVertexArrays(1, &VAO);
+        if (VBO == 0) glGenBuffers(1, &VBO);
+        if (normalVBO == 0) glGenBuffers(1, &normalVBO);
+        if (texCoordVBO == 0) glGenBuffers(1, &texCoordVBO);
+        if (EBO == 0) glGenBuffers(1, &EBO);
 
         glBindVertexArray(VAO);
 
-        // Vertex positions (location = 0)
+        // Position
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
         glBufferData(GL_ARRAY_BUFFER, vertexData.size() * sizeof(float), vertexData.data(), GL_STATIC_DRAW);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(0);
 
-        // Normals (location = 1)
+        // Normal
         glBindBuffer(GL_ARRAY_BUFFER, normalVBO);
         glBufferData(GL_ARRAY_BUFFER, normalData.size() * sizeof(float), normalData.data(), GL_STATIC_DRAW);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(1);
 
-        // Texture coordinates (location = 2)
+        // TexCoord
         glBindBuffer(GL_ARRAY_BUFFER, texCoordVBO);
         glBufferData(GL_ARRAY_BUFFER, texCoords.size() * sizeof(float), texCoords.data(), GL_STATIC_DRAW);
         glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), (void*)0);
         glEnableVertexAttribArray(2);
 
-        // Indices
+        // EBO (Indices) - 중요: 기존 indices 그대로 사용
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(unsigned int), indices.data(), GL_STATIC_DRAW);
 
         glBindVertexArray(0);
-
-        std::cout << "  → Setup complete: " << texCoords.size() / 2 << " UV coords" << std::endl;
+        std::cout << "  -> Setup buffers complete." << std::endl;
     }
 
     void setTextures(const std::string& diffusePath, const std::string& normalMapPath = "") {
@@ -1941,7 +1867,7 @@ void loadModels() {
     donutModel.loadOBJ("assets/ellipsoid.obj");
     triangleModel.loadOBJ("assets/star_sharp.obj");
     riceModel.loadOBJ("assets/rice.obj");
-    himekaModel.loadOBJ("assets/star_smooth.obj");
+    himekaModel.loadOBJ("assets/jet.obj");
 
     // Assign textures and normal maps
     std::cout << "\nAssigning textures and normal maps..." << std::endl;
@@ -1968,7 +1894,7 @@ void loadModels() {
     riceModel.setTextures("assets/diffuse_rice.png", "assets/normal_organic.png");
 
     std::cout << "Sonic model (player):" << std::endl;
-    himekaModel.setTextures("assets/diffuse_jet.png", "assets/normal_organic.png");
+    himekaModel.setTextures("assets/diffuse_jet.png", "assets/normal_industrial.png");
 
     std::cout << "\n✓ All models and textures loaded successfully!" << std::endl;
     std::cout << "==========================================\n" << std::endl;
@@ -2020,10 +1946,7 @@ void renderBoundary() {
 
 // Render fixed ground plane on XY plane at z = floorZ
 void renderGroundPlane() {
-    static GLuint groundVAO = 0;
-    static GLuint groundVBO = 0;
-    static GLuint groundEBO = 0;
-
+    static GLuint groundVAO = 0, groundVBO = 0, groundEBO = 0;
     if (groundVAO == 0) {
         glGenVertexArrays(1, &groundVAO);
         glGenBuffers(1, &groundVBO);
@@ -2031,22 +1954,16 @@ void renderGroundPlane() {
 
         glBindVertexArray(groundVAO);
 
-        // z = floorZ 에서 XY 평면에 놓인 큰 quad
         float z = floorZ;
 
-        // 화면 전체를 충분히 덮도록 X,Y 범위는 게임 경계에 맞춤
         float groundVertices[] = {
-            // positions (x, y, z)
-            GAME_LEFT,  GAME_BOTTOM, z,  // 0
-            GAME_RIGHT, GAME_BOTTOM, z,  // 1
-            GAME_RIGHT, GAME_TOP,    z,  // 2
-            GAME_LEFT,  GAME_TOP,    z   // 3
+            GAME_LEFT,  GAME_BOTTOM, z,
+            GAME_RIGHT, GAME_BOTTOM, z,
+            GAME_RIGHT, GAME_TOP,    z,
+            GAME_LEFT,  GAME_TOP,    z
         };
 
-        unsigned int groundIndices[] = {
-            0, 1, 2,
-            0, 2, 3
-        };
+        unsigned int groundIndices[] = { 0,1,2, 0,2,3 };
 
         glBindBuffer(GL_ARRAY_BUFFER, groundVBO);
         glBufferData(GL_ARRAY_BUFFER, sizeof(groundVertices), groundVertices, GL_STATIC_DRAW);
@@ -2060,12 +1977,12 @@ void renderGroundPlane() {
         glBindVertexArray(0);
     }
 
-    glm::mat4 model = glm::mat4(1.0f);
+    glm::mat4 model(1.0f);
     glm::mat4 mvp = projectionMatrix * viewMatrix * model;
 
-    glUseProgram(wireframeShaderProgram); // uMVP, uColor 사용
+    glUseProgram(wireframeShaderProgram);
     glUniformMatrix4fv(uMVP_wire, 1, GL_FALSE, glm::value_ptr(mvp));
-    glUniform3f(uColor_wire, 0.12f, 0.12f, 0.15f); // 어두운 회색 바닥
+    glUniform3f(uColor_wire, 0.12f, 0.12f, 0.15f);
 
     glEnable(GL_POLYGON_OFFSET_FILL);
     glPolygonOffset(1.0f, 1.0f);
@@ -2080,7 +1997,7 @@ void renderGroundPlane() {
 
 // z = floorZ 평면(XY plane)에 대한 shadow projection matrix (directional light 기준)
 glm::mat4 computeShadowMatrix(const glm::vec3& lightDir) {
-    // Plane: z = floorZ → (0, 0, 1, -floorZ)
+    // Plane: z = floorZ → 0*x + 0*y + 1*z + d = 0  → d = -floorZ
     glm::vec4 plane(0.0f, 0.0f, 1.0f, -floorZ);
     glm::vec4 L(lightDir.x, lightDir.y, lightDir.z, 0.0f); // directional light (w=0)
 
