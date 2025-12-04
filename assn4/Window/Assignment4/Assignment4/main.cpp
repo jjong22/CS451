@@ -1478,37 +1478,52 @@ public:
             return;
         }
 
+        // [수정 1] 이동 로직을 Y축 -> Z축으로 변경 (XZ 평면 이동)
         Vec3 movement(0, 0, 0);
         if (keys['a'] || keys['A']) movement.x -= 1.0f;
         if (keys['d'] || keys['D']) movement.x += 1.0f;
-        if (keys['w'] || keys['W']) movement.y += 1.0f;
-        if (keys['s'] || keys['S']) movement.y -= 1.0f;
+        
+        // W, S키가 이제 위아래(Y)가 아니라 앞뒤(Z)로 움직입니다.
+        if (keys['w'] || keys['W']) movement.y += 1.0f; // 앞으로 (Z 감소)
+        if (keys['s'] || keys['S']) movement.y -= 1.0f; // 뒤로 (Z 증가)
 
         if (movement.length() > 0) {
             movement = movement.normalize() * 2.0f;
             velocity = movement;
 
-            // ADDITIONAL GOAL: Movement-responsive animation
-            targetRotation.z = -movement.x * 20.0f;  // Roll based on horizontal movement
-            targetRotation.x = movement.y * 10.0f;   // Pitch based on vertical movement
+            // [수정 2] 모델이 앞을 보게 회전 (-90도 베이스) + 움직임에 따른 틸트 애니메이션
+            // 기본 -90도(앞) + 위아래 움직임에 따른 기울기(movement.z)
+            targetRotation.x = -90.0f + movement.y * 10.0f; 
+            
+            // 좌우 롤링 (기존 유지)
+            targetRotation.y = -movement.x * 20.0f;  
 
-            // ADDITIONAL GOAL 3: Add trail
+            // 트레일 효과 (Trail)
             if (trailEffectEnabled && (int)(gameTime * 30) % 2 == 0) {
-                trailPoints.push_back(TrailPoint(position + Vec3(0, -size, 0),
+                // 트레일 위치도 발 밑이 아니라 엔진 뒤쪽으로 조정
+                trailPoints.push_back(TrailPoint(position + Vec3(0, 0, size),
                     Vec3(0.3f, 0.7f, 1.0f), 0.5f));
             }
         }
         else {
             velocity = Vec3(0, 0, 0);
-            targetRotation = Vec3(0, 0, 0);  // Return to neutral
+            // 멈췄을 때도 앞을 보게 유지 (-90도)
+            targetRotation = Vec3(-90.0f, 0, 0); 
         }
 
         GameObject::update(deltaTime);
 
+        // [수정 3] 경계 체크도 Y축 -> Z축으로 변경
         if (position.x - size < GAME_LEFT) position.x = GAME_LEFT + size;
         if (position.x + size > GAME_RIGHT) position.x = GAME_RIGHT - size;
-        if (position.y - size < GAME_BOTTOM) position.y = GAME_BOTTOM + size;
-        if (position.y + size > GAME_TOP) position.y = GAME_TOP - size;
+        
+        // Y축은 고정 (바닥 위)
+        // 바닥이 -3.0f이므로 플레이어는 그보다 위에 떠 있어야 함 (예: -1.5f)
+        position.z= 0.0f; 
+
+        // Z축 경계 체크 (NEAR ~ FAR)
+        if (position.y - size < GAME_NEAR) position.y = GAME_NEAR + size;
+        if (position.y + size > GAME_FAR) position.y = GAME_FAR - size;
 
         if (invulnerable) {
             invulnerabilityTimer -= deltaTime;
@@ -1518,14 +1533,15 @@ public:
         for (int i = 0; i < orbitEntities.size(); i++) {
             float angle = gameTime * 2.0f + (i * 2.0f * M_PI / orbitEntities.size());
             float radius = 0.3f;
+            // 오빗 엔티티도 눕혀서 돌게 수정 (XZ 평면 회전)
             orbitEntities[i].position = Vec3(
                 position.x + cos(angle) * radius,
-                position.y + sin(angle) * radius,
-                position.z
+                position.y, // 높이 고정
+                position.z + sin(angle) * radius
             );
             orbitEntities[i].targetRotation.y = gameTime * 180.0f;
         }
-        // Update movement direction for dynamic ground plane
+        
         if (position != lastPosition) {
             velocity = (position - lastPosition).normalize();
         }
@@ -2251,10 +2267,6 @@ void render() {
         );
     }
 
-    renderBoundary();
-    renderGroundPlane();
-    renderTrails();
-
     // === RENDER LIGHT SOURCES ===
     if (currentRender == OPAQUE_POLYGON) {
         renderPointLight();
@@ -2264,6 +2276,10 @@ void render() {
     for (auto& enemy : enemies) enemy.render();
     for (auto& attack : attacks) attack.render();
     for (auto& bullet : bullets) bullet.render();
+
+    renderBoundary();
+    renderGroundPlane();
+    renderTrails();
 
     glutSwapBuffers();
 }
