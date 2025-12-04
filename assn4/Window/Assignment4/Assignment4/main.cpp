@@ -81,7 +81,7 @@ const float GAME_NEAR = -2.0f;
 const float GAME_FAR = 2.0f;
 
 // Entity sizes
-const float PLAYER_SIZE = 0.30f;
+const float PLAYER_SIZE = 0.80f;
 const float BULLET_SIZE = 0.08f;
 const float ATTACK_SIZE = 0.10f;
 const float ENEMY_SIZE = 0.80f;
@@ -1941,7 +1941,7 @@ void loadModels() {
     donutModel.loadOBJ("assets/ellipsoid.obj");
     triangleModel.loadOBJ("assets/star_sharp.obj");
     riceModel.loadOBJ("assets/rice.obj");
-    himekaModel.loadOBJ("assets/sonic.obj");
+    himekaModel.loadOBJ("assets/star_smooth.obj");
 
     // Assign textures and normal maps
     std::cout << "\nAssigning textures and normal maps..." << std::endl;
@@ -1968,7 +1968,7 @@ void loadModels() {
     riceModel.setTextures("assets/diffuse_rice.png", "assets/normal_organic.png");
 
     std::cout << "Sonic model (player):" << std::endl;
-    himekaModel.setTextures("assets/diffuse_sonic_1.png", "assets/normal_organic.png");
+    himekaModel.setTextures("assets/diffuse_jet.png", "assets/normal_organic.png");
 
     std::cout << "\n✓ All models and textures loaded successfully!" << std::endl;
     std::cout << "==========================================\n" << std::endl;
