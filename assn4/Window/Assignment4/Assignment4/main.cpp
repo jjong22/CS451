@@ -56,7 +56,6 @@ class Player;
 extern Player player;
 
 glm::vec3 globalViewPos(0, 0, 8); // TOP_PERSPECTIVE 기본값
-glm::mat4 computeShadowMatrix(const glm::vec3& lightDir, float floorY);
 
 // Window size
 const int WINDOW_WIDTH = 800;
@@ -132,9 +131,6 @@ struct DirectionalLight {
     }
 };
 
-// 최대 N개의 point light 지원
-const int MAX_POINT_LIGHTS = 4;
-
 struct PointLight {
     Vec3 position;
     Vec3 ambient;
@@ -143,7 +139,6 @@ struct PointLight {
     float constant;
     float linear;
     float quadratic;
-    bool enabled;
 
     PointLight()
         : position(0, 0, 0),
@@ -152,21 +147,12 @@ struct PointLight {
         specular(1.0f, 1.0f, 0.8f),
         constant(1.0f),
         linear(0.09f),
-        quadratic(0.032f),
-        enabled(true)
-    {
+        quadratic(0.032f) {
     }
 };
 
-// === Planar Shadow (Additional Goal) ===
-float floorY = 0.0f;
-glm::vec3 shadowColor(0.0f, 0.0f, 0.0f);
-float shadowAlpha = 0.5f;
-
-
 DirectionalLight dirLight;
-PointLight pointLights[MAX_POINT_LIGHTS];
-int numActivePointLights = 0;
+PointLight pointLight;
 
 CameraMode currentCamera = TOP_PERSPECTIVE;
 RenderMode currentRender = OPAQUE_POLYGON;
@@ -183,11 +169,6 @@ GLuint wireframeShaderProgram;
 GLuint hiddenLineShaderProgram;
 GLuint glowShaderProgram;  // Additional: Glow effect shader
 GLuint trailShaderProgram; // Additional: Trail effect shader
-
-GLuint shadowShaderProgram;
-GLint uMVP_shadow;
-GLint uShadowColor;
-GLint uShadowAlpha;
 
 // Shader uniform locations
 GLint uMVP, uColor, uModelMatrix, uTime, uSmoothShading;
@@ -762,20 +743,14 @@ uniform vec3 uDirLight_ambient;
 uniform vec3 uDirLight_diffuse;
 uniform vec3 uDirLight_specular;
 
-const int MAX_POINT_LIGHTS = 4;
-
-struct PointLight {
-    vec3 position;
-    vec3 ambient;
-    vec3 diffuse;
-    vec3 specular;
-    float constant;
-    float linear;
-    float quadratic;
-};
-
-uniform int uNumPointLights;
-uniform PointLight uPointLights[MAX_POINT_LIGHTS];
+// Point light
+uniform vec3 uPointLight_position;
+uniform vec3 uPointLight_ambient;
+uniform vec3 uPointLight_diffuse;
+uniform vec3 uPointLight_specular;
+uniform float uPointLight_constant;
+uniform float uPointLight_linear;
+uniform float uPointLight_quadratic;
 
 out vec3 vertexColor;
 out vec2 TexCoord;
@@ -798,29 +773,25 @@ vec3 calcDirectionalLight(vec3 normal, vec3 viewDir) {
     return ambient + diffuse + specular;
 }
 
-vec3 calcPointLights(vec3 normal, vec3 viewDir) {
-    vec3 sum = vec3(0.0);
-
-    for (int i = 0; i < uNumPointLights; ++i) {
-        vec3 lightDir = normalize(uPointLights[i].position - FragPos);
-        float distance = length(uPointLights[i].position - FragPos);
-        float attenuation = 1.0 / (uPointLights[i].constant
-                                   + uPointLights[i].linear * distance
-                                   + uPointLights[i].quadratic * distance * distance);
-
-        vec3 ambient  = uPointLights[i].ambient * uObjectColor;
-
-        float diff    = max(dot(normal, lightDir), 0.0);
-        vec3 diffuse  = uPointLights[i].diffuse * diff * uObjectColor;
-
-        vec3 halfwayDir = normalize(lightDir + viewDir);
-        float spec   = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
-        vec3 specular = uPointLights[i].specular * spec;
-
-        sum += (ambient + diffuse + specular) * attenuation;
-    }
-
-    return sum;
+vec3 calcPointLight(vec3 fragPos, vec3 normal, vec3 viewDir) {
+    vec3 lightDir = normalize(uPointLight_position - fragPos);
+    float distance = length(uPointLight_position - fragPos);
+    float attenuation = 1.0 / (uPointLight_constant + uPointLight_linear * distance + 
+                                uPointLight_quadratic * distance * distance);
+    
+    // Ambient
+    vec3 ambient = uPointLight_ambient * uObjectColor;
+    
+    // Diffuse
+    float diff = max(dot(normal, lightDir), 0.0);
+    vec3 diffuse = uPointLight_diffuse * diff * uObjectColor;
+    
+    // Specular (Blinn-Phong)
+    vec3 halfwayDir = normalize(lightDir + viewDir);
+    float spec = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
+    vec3 specular = uPointLight_specular * spec;
+    
+    return (ambient + diffuse + specular) * attenuation;
 }
 
 void main() {
@@ -831,8 +802,8 @@ void main() {
     vec3 viewDir = normalize(uViewPos - FragPos);
     
     // Calculate lighting in vertex shader (Gouraud)
-    vec3 result = calcDirectionalLight(norm, viewDir);
-    result += calcPointLights(norm, viewDir);
+    vec3 result = calcDirectionalLight(Normal, viewDir);
+    result += calcPointLight(FragPos, Normal, viewDir);
     
     vertexColor = result;
     TexCoord = aTexCoord;
@@ -898,20 +869,14 @@ uniform vec3 uDirLight_ambient;
 uniform vec3 uDirLight_diffuse;
 uniform vec3 uDirLight_specular;
 
-const int MAX_POINT_LIGHTS = 4;
-
-struct PointLight {
-    vec3 position;
-    vec3 ambient;
-    vec3 diffuse;
-    vec3 specular;
-    float constant;
-    float linear;
-    float quadratic;
-};
-
-uniform int uNumPointLights;
-uniform PointLight uPointLights[MAX_POINT_LIGHTS];
+// Point light
+uniform vec3 uPointLight_position;
+uniform vec3 uPointLight_ambient;
+uniform vec3 uPointLight_diffuse;
+uniform vec3 uPointLight_specular;
+uniform float uPointLight_constant;
+uniform float uPointLight_linear;
+uniform float uPointLight_quadratic;
 
 uniform sampler2D uTexture;
 
@@ -933,29 +898,25 @@ vec3 calcDirectionalLight(vec3 normal, vec3 viewDir) {
     return ambient + diffuse + specular;
 }
 
-vec3 calcPointLights(vec3 normal, vec3 viewDir) {
-    vec3 sum = vec3(0.0);
-
-    for (int i = 0; i < uNumPointLights; ++i) {
-        vec3 lightDir = normalize(uPointLights[i].position - FragPos);
-        float distance = length(uPointLights[i].position - FragPos);
-        float attenuation = 1.0 / (uPointLights[i].constant
-                                   + uPointLights[i].linear * distance
-                                   + uPointLights[i].quadratic * distance * distance);
-
-        vec3 ambient  = uPointLights[i].ambient * uObjectColor;
-
-        float diff    = max(dot(normal, lightDir), 0.0);
-        vec3 diffuse  = uPointLights[i].diffuse * diff * uObjectColor;
-
-        vec3 halfwayDir = normalize(lightDir + viewDir);
-        float spec   = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
-        vec3 specular = uPointLights[i].specular * spec;
-
-        sum += (ambient + diffuse + specular) * attenuation;
-    }
-
-    return sum;
+vec3 calcPointLight(vec3 normal, vec3 viewDir) {
+    vec3 lightDir = normalize(uPointLight_position - FragPos);
+    float distance = length(uPointLight_position - FragPos);
+    float attenuation = 1.0 / (uPointLight_constant + uPointLight_linear * distance + 
+                                uPointLight_quadratic * distance * distance);
+    
+    // Ambient
+    vec3 ambient = uPointLight_ambient * uObjectColor;
+    
+    // Diffuse
+    float diff = max(dot(normal, lightDir), 0.0);
+    vec3 diffuse = uPointLight_diffuse * diff * uObjectColor;
+    
+    // Specular (Blinn-Phong)
+    vec3 halfwayDir = normalize(lightDir + viewDir);
+    float spec = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
+    vec3 specular = uPointLight_specular * spec;
+    
+    return (ambient + diffuse + specular) * attenuation;
 }
 
 void main() {
@@ -964,7 +925,7 @@ void main() {
     
     // Calculate lighting in fragment shader (Phong)
     vec3 result = calcDirectionalLight(norm, viewDir);
-    result += calcPointLights(norm, viewDir);
+    result += calcPointLight(norm, viewDir);
     
     vec4 texColor = texture(uTexture, TexCoord);
     FragColor = vec4(result, 1.0) * texColor;
@@ -1024,20 +985,14 @@ uniform vec3 uDirLight_ambient;
 uniform vec3 uDirLight_diffuse;
 uniform vec3 uDirLight_specular;
 
-const int MAX_POINT_LIGHTS = 4;
-
-struct PointLight {
-    vec3 position;
-    vec3 ambient;
-    vec3 diffuse;
-    vec3 specular;
-    float constant;
-    float linear;
-    float quadratic;
-};
-
-uniform int uNumPointLights;
-uniform PointLight uPointLights[MAX_POINT_LIGHTS];
+// Point light
+uniform vec3 uPointLight_position;
+uniform vec3 uPointLight_ambient;
+uniform vec3 uPointLight_diffuse;
+uniform vec3 uPointLight_specular;
+uniform float uPointLight_constant;
+uniform float uPointLight_linear;
+uniform float uPointLight_quadratic;
 
 uniform sampler2D uTexture;
 uniform sampler2D uNormalMap;
@@ -1061,29 +1016,25 @@ vec3 calcDirectionalLight(vec3 normal, vec3 viewDir) {
     return ambient + diffuse + specular;
 }
 
-vec3 calcPointLights(vec3 normal, vec3 viewDir) {
-    vec3 sum = vec3(0.0);
-
-    for (int i = 0; i < uNumPointLights; ++i) {
-        vec3 lightDir = normalize(uPointLights[i].position - FragPos);
-        float distance = length(uPointLights[i].position - FragPos);
-        float attenuation = 1.0 / (uPointLights[i].constant
-                                   + uPointLights[i].linear * distance
-                                   + uPointLights[i].quadratic * distance * distance);
-
-        vec3 ambient  = uPointLights[i].ambient * uObjectColor;
-
-        float diff    = max(dot(normal, lightDir), 0.0);
-        vec3 diffuse  = uPointLights[i].diffuse * diff * uObjectColor;
-
-        vec3 halfwayDir = normalize(lightDir + viewDir);
-        float spec   = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
-        vec3 specular = uPointLights[i].specular * spec;
-
-        sum += (ambient + diffuse + specular) * attenuation;
-    }
-
-    return sum;
+vec3 calcPointLight(vec3 normal, vec3 viewDir) {
+    vec3 lightDir = normalize(uPointLight_position - FragPos);
+    float distance = length(uPointLight_position - FragPos);
+    float attenuation = 1.0 / (uPointLight_constant + uPointLight_linear * distance + 
+                                uPointLight_quadratic * distance * distance);
+    
+    // Ambient
+    vec3 ambient = uPointLight_ambient * uObjectColor;
+    
+    // Diffuse
+    float diff = max(dot(normal, lightDir), 0.0);
+    vec3 diffuse = uPointLight_diffuse * diff * uObjectColor;
+    
+    // Specular (Blinn-Phong)
+    vec3 halfwayDir = normalize(lightDir + viewDir);
+    float spec = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
+    vec3 specular = uPointLight_specular * spec;
+    
+    return (ambient + diffuse + specular) * attenuation;
 }
 
 void main() {
@@ -1101,7 +1052,7 @@ void main() {
     
     // Calculate lighting with normal-mapped surface
     vec3 result = calcDirectionalLight(norm, viewDir);
-    result += calcPointLights(norm, viewDir);
+    result += calcPointLight(norm, viewDir);
     
     vec4 texColor = texture(uTexture, TexCoord);
     FragColor = vec4(result, 1.0) * texColor;
@@ -1185,29 +1136,6 @@ void main() {
     FragColor = vec4(uColor, uAlpha);
 }
 )";
-    // ==================== SHADOW SHADER (planar) ====================
-    const char* shadowVertexSource = R"(
-#version 330 core
-layout (location = 0) in vec3 aPos;
-
-uniform mat4 uMVP;
-
-void main() {
-    gl_Position = uMVP * vec4(aPos, 1.0);
-}
-)";
-
-    const char* shadowFragmentSource = R"(
-#version 330 core
-out vec4 FragColor;
-
-uniform vec3 uShadowColor;
-uniform float uShadowAlpha;
-
-void main() {
-    FragColor = vec4(uShadowColor, uShadowAlpha);
-}
-)";
 
     trailShaderProgram = createShaderProgram(trailVertexSource, trailFragmentSource);
     uMVP_trail = glGetUniformLocation(trailShaderProgram, "uMVP");
@@ -1217,11 +1145,6 @@ void main() {
     // Create default textures
     defaultTexture = createDefaultTexture();
     defaultNormalMap = createDefaultNormalMap();
-
-    shadowShaderProgram = createShaderProgram(shadowVertexSource, shadowFragmentSource);
-    uMVP_shadow = glGetUniformLocation(shadowShaderProgram, "uMVP");
-    uShadowColor = glGetUniformLocation(shadowShaderProgram, "uShadowColor");
-    uShadowAlpha = glGetUniformLocation(shadowShaderProgram, "uShadowAlpha");
 }
 
 
@@ -1339,101 +1262,74 @@ public:
             glm::vec3 dirLightSpecular = dirLight.specular.toGLM();
             glUniform3fv(glGetUniformLocation(currentProgram, "uDirLight_specular"), 1, glm::value_ptr(dirLightSpecular));
 
-            // === Multiple Point Lights ===
-            glUniform1i(glGetUniformLocation(currentProgram, "uNumPointLights"), numActivePointLights);
+            glm::vec3 pointLightPosition = pointLight.position.toGLM();
+            glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_position"), 1, glm::value_ptr(pointLightPosition));
 
-            for (int i = 0; i < numActivePointLights; ++i) {
-                if (!pointLights[i].enabled) continue;
+            glm::vec3 pointLightAmbient = pointLight.ambient.toGLM();
+            glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_ambient"), 1, glm::value_ptr(pointLightAmbient));
 
-                std::string base = "uPointLights[" + std::to_string(i) + "]";
+            glm::vec3 pointLightDiffuse = pointLight.diffuse.toGLM();
+            glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_diffuse"), 1, glm::value_ptr(pointLightDiffuse));
 
-                glm::vec3 pos = pointLights[i].position.toGLM();
-                glm::vec3 amb = pointLights[i].ambient.toGLM();
-                glm::vec3 diff = pointLights[i].diffuse.toGLM();
-                glm::vec3 spec = pointLights[i].specular.toGLM();
+            glm::vec3 pointLightSpecular = pointLight.specular.toGLM();
+            glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_specular"), 1, glm::value_ptr(pointLightSpecular));
+            glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_constant"), pointLight.constant);
+            glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_linear"), pointLight.linear);
+            glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_quadratic"), pointLight.quadratic);
 
-                glUniform3fv(glGetUniformLocation(currentProgram, (base + ".position").c_str()), 1, glm::value_ptr(pos));
-                glUniform3fv(glGetUniformLocation(currentProgram, (base + ".ambient").c_str()), 1, glm::value_ptr(amb));
-                glUniform3fv(glGetUniformLocation(currentProgram, (base + ".diffuse").c_str()), 1, glm::value_ptr(diff));
-                glUniform3fv(glGetUniformLocation(currentProgram, (base + ".specular").c_str()), 1, glm::value_ptr(spec));
-                glUniform1f(glGetUniformLocation(currentProgram, (base + ".constant").c_str()), pointLights[i].constant);
-                glUniform1f(glGetUniformLocation(currentProgram, (base + ".linear").c_str()), pointLights[i].linear);
-                glUniform1f(glGetUniformLocation(currentProgram, (base + ".quadratic").c_str()), pointLights[i].quadratic);
+            // Textures
+            glActiveTexture(GL_TEXTURE0);
+            if (model->diffuseTexture != 0) {
+                glBindTexture(GL_TEXTURE_2D, model->diffuseTexture);
+            }
+            else {
+                glBindTexture(GL_TEXTURE_2D, defaultTexture);
+            }
+            glUniform1i(glGetUniformLocation(currentProgram, "uTexture"), 0);
 
-                // Textures
-                glActiveTexture(GL_TEXTURE0);
-                if (model->diffuseTexture != 0) {
-                    glBindTexture(GL_TEXTURE_2D, model->diffuseTexture);
+            if (currentShading == PHONG_NORMAL_MAP) {
+                glActiveTexture(GL_TEXTURE1);
+                if (model->normalMapTexture != 0) {
+                    glBindTexture(GL_TEXTURE_2D, model->normalMapTexture);
+                    glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), model->hasNormalMap ? 1 : 0);
                 }
                 else {
-                    glBindTexture(GL_TEXTURE_2D, defaultTexture);
+                    glBindTexture(GL_TEXTURE_2D, defaultNormalMap);
+                    glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), 0);
                 }
-                glUniform1i(glGetUniformLocation(currentProgram, "uTexture"), 0);
-
-                if (currentShading == PHONG_NORMAL_MAP) {
-                    glActiveTexture(GL_TEXTURE1);
-                    if (model->normalMapTexture != 0) {
-                        glBindTexture(GL_TEXTURE_2D, model->normalMapTexture);
-                        glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), model->hasNormalMap ? 1 : 0);
-                    }
-                    else {
-                        glBindTexture(GL_TEXTURE_2D, defaultNormalMap);
-                        glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), 0);
-                    }
-                    glUniform1i(glGetUniformLocation(currentProgram, "uNormalMap"), 1);
-                }
-
-                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-                model->render();
+                glUniform1i(glGetUniformLocation(currentProgram, "uNormalMap"), 1);
             }
-            if (currentRender == OPAQUE_POLYGON) {
-                glm::vec3 lightDir = dirLight.direction.toGLM();
-                glm::mat4 shadowMat = computeShadowMatrix(lightDir, floorY);
 
-                glm::mat4 shadowModel = shadowMat * modelMatrix;
-                glm::mat4 shadowMVP = projectionMatrix * viewMatrix * shadowModel;
 
-                glUseProgram(shadowShaderProgram);
-                glUniformMatrix4fv(uMVP_shadow, 1, GL_FALSE, glm::value_ptr(shadowMVP));
-                glUniform3fv(uShadowColor, 1, glm::value_ptr(shadowColor));
-                glUniform1f(uShadowAlpha, shadowAlpha);
 
-                glEnable(GL_POLYGON_OFFSET_FILL);
-                glPolygonOffset(1.0f, 1.0f);
-
-                glEnable(GL_BLEND);
-                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-
-                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-                model->render();
-
-                glDisable(GL_BLEND);
-                glDisable(GL_POLYGON_OFFSET_FILL);
-            }
-            else if (currentRender == WIREFRAME) {
-                glUseProgram(wireframeShaderProgram);
-                glUniformMatrix4fv(uMVP_wire, 1, GL_FALSE, glm::value_ptr(mvp));
-                glUniform3f(uColor_wire, color.x, color.y, color.z);
-                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-                model->render();
-            }
-            else if (currentRender == HIDDEN_LINE_WIREFRAME) {
-                glUseProgram(hiddenLineShaderProgram);
-                glUniformMatrix4fv(uMVP_hidden, 1, GL_FALSE, glm::value_ptr(mvp));
-                glUniform3f(uColor_hidden, 0, 0, 0);
-                glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-                glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
-                model->render();
-                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
-                glUniform3f(uColor_hidden, color.x, color.y, color.z);
-                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-                glEnable(GL_POLYGON_OFFSET_LINE);
-                glPolygonOffset(-1.0f, -1.0f);
-                model->render();
-                glDisable(GL_POLYGON_OFFSET_LINE);
-            }
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            model->render();
+        }
+        else if (currentRender == WIREFRAME) {
+            glUseProgram(wireframeShaderProgram);
+            glUniformMatrix4fv(uMVP_wire, 1, GL_FALSE, glm::value_ptr(mvp));
+            glUniform3f(uColor_wire, color.x, color.y, color.z);
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            model->render();
+        }
+        else if (currentRender == HIDDEN_LINE_WIREFRAME) {
+            glUseProgram(hiddenLineShaderProgram);
+            glUniformMatrix4fv(uMVP_hidden, 1, GL_FALSE, glm::value_ptr(mvp));
+            glUniform3f(uColor_hidden, 0, 0, 0);
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
+            model->render();
+            glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+            glUniform3f(uColor_hidden, color.x, color.y, color.z);
+            glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+            glEnable(GL_POLYGON_OFFSET_LINE);
+            glPolygonOffset(-1.0f, -1.0f);
+            model->render();
+            glDisable(GL_POLYGON_OFFSET_LINE);
         }
     }
+
+
     bool checkCollision(const GameObject& other) const {
         float distance = (position - other.position).length();
         return distance < (size + other.size);
@@ -1711,50 +1607,44 @@ public:
                 glm::vec3 dirLightSpecular = dirLight.specular.toGLM();
                 glUniform3fv(glGetUniformLocation(currentProgram, "uDirLight_specular"), 1, glm::value_ptr(dirLightSpecular));
 
-                // === Multiple Point Lights ===
-                glUniform1i(glGetUniformLocation(currentProgram, "uNumPointLights"), numActivePointLights);
+                glm::vec3 pointLightPosition = pointLight.position.toGLM();
+                glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_position"), 1, glm::value_ptr(pointLightPosition));
 
-                for (int i = 0; i < numActivePointLights; ++i) {
-                    if (!pointLights[i].enabled) continue;
+                glm::vec3 pointLightAmbient = pointLight.ambient.toGLM();
+                glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_ambient"), 1, glm::value_ptr(pointLightAmbient));
 
-                    std::string base = "uPointLights[" + std::to_string(i) + "]";
+                glm::vec3 pointLightDiffuse = pointLight.diffuse.toGLM();
+                glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_diffuse"), 1, glm::value_ptr(pointLightDiffuse));
 
-                    glm::vec3 pos = pointLights[i].position.toGLM();
-                    glm::vec3 amb = pointLights[i].ambient.toGLM();
-                    glm::vec3 diff = pointLights[i].diffuse.toGLM();
-                    glm::vec3 spec = pointLights[i].specular.toGLM();
+                glm::vec3 pointLightSpecular = pointLight.specular.toGLM();
+                glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_specular"), 1, glm::value_ptr(pointLightSpecular));
+                glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_constant"), pointLight.constant);
+                glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_linear"), pointLight.linear);
+                glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_quadratic"), pointLight.quadratic);
 
-                    glUniform3fv(glGetUniformLocation(currentProgram, (base + ".position").c_str()), 1, glm::value_ptr(pos));
-                    glUniform3fv(glGetUniformLocation(currentProgram, (base + ".ambient").c_str()), 1, glm::value_ptr(amb));
-                    glUniform3fv(glGetUniformLocation(currentProgram, (base + ".diffuse").c_str()), 1, glm::value_ptr(diff));
-                    glUniform3fv(glGetUniformLocation(currentProgram, (base + ".specular").c_str()), 1, glm::value_ptr(spec));
-                    glUniform1f(glGetUniformLocation(currentProgram, (base + ".constant").c_str()), pointLights[i].constant);
-                    glUniform1f(glGetUniformLocation(currentProgram, (base + ".linear").c_str()), pointLights[i].linear);
-                    glUniform1f(glGetUniformLocation(currentProgram, (base + ".quadratic").c_str()), pointLights[i].quadratic);
+                // Textures
+                glActiveTexture(GL_TEXTURE0);
+                if (part.model->diffuseTexture != 0) {
+                    glBindTexture(GL_TEXTURE_2D, part.model->diffuseTexture);
+                }
+                else {
+                    glBindTexture(GL_TEXTURE_2D, defaultTexture);
+                }
+                glUniform1i(glGetUniformLocation(currentProgram, "uTexture"), 0);
 
-                    // Textures
-                    glActiveTexture(GL_TEXTURE0);
-                    if (part.model->diffuseTexture != 0) {
-                        glBindTexture(GL_TEXTURE_2D, part.model->diffuseTexture);
+                if (currentShading == PHONG_NORMAL_MAP) {
+                    glActiveTexture(GL_TEXTURE1);
+                    if (part.model->normalMapTexture != 0) {
+                        glBindTexture(GL_TEXTURE_2D, part.model->normalMapTexture);
+                        glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), part.model->hasNormalMap ? 1 : 0);
                     }
                     else {
-                        glBindTexture(GL_TEXTURE_2D, defaultTexture);
+                        glBindTexture(GL_TEXTURE_2D, defaultNormalMap);
+                        glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), 0);
                     }
-                    glUniform1i(glGetUniformLocation(currentProgram, "uTexture"), 0);
+                    glUniform1i(glGetUniformLocation(currentProgram, "uNormalMap"), 1);
+                }
 
-                    if (currentShading == PHONG_NORMAL_MAP) {
-                        glActiveTexture(GL_TEXTURE1);
-                        if (part.model->normalMapTexture != 0) {
-                            glBindTexture(GL_TEXTURE_2D, part.model->normalMapTexture);
-                            glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), part.model->hasNormalMap ? 1 : 0);
-                        }
-                        else {
-                            glBindTexture(GL_TEXTURE_2D, defaultNormalMap);
-                            glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), 0);
-                        }
-                        glUniform1i(glGetUniformLocation(currentProgram, "uNormalMap"), 1);
-                    }
-                } // 💡 이 닫는 괄호가 누락되어 있었습니다.
 
                 glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                 part.model->render();
@@ -1975,58 +1865,39 @@ void renderTrails() {
     glDisable(GL_BLEND);
 }
 
-// y = floorY 평면에 대한 shadow projection matrix (directional light 기준)
-glm::mat4 computeShadowMatrix(const glm::vec3& lightDir, float floorY) {
-    // 평면: y = floorY => 0*x + 1*y + 0*z + d = 0  => d = -floorY
-    glm::vec4 plane(0.0f, 1.0f, 0.0f, -floorY);
-    glm::vec4 L(lightDir.x, lightDir.y, lightDir.z, 0.0f); // directional(light w=0)
-
-    float dotPL = plane.x * L.x + plane.y * L.y + plane.z * L.z + plane.w * L.w;
-
-    glm::mat4 S(1.0f);
-    S[0][0] = dotPL - L.x * plane.x;
-    S[0][1] = -L.x * plane.y;
-    S[0][2] = -L.x * plane.z;
-    S[0][3] = -L.x * plane.w;
-
-    S[1][0] = -L.y * plane.x;
-    S[1][1] = dotPL - L.y * plane.y;
-    S[1][2] = -L.y * plane.z;
-    S[1][3] = -L.y * plane.w;
-
-    S[2][0] = -L.z * plane.x;
-    S[2][1] = -L.z * plane.y;
-    S[2][2] = dotPL - L.z * plane.z;
-    S[2][3] = -L.z * plane.w;
-
-    S[3][0] = -L.w * plane.x;
-    S[3][1] = -L.w * plane.y;
-    S[3][2] = -L.w * plane.z;
-    S[3][3] = dotPL - L.w * plane.w;
-
-    return S;
-}
-
 // Render point light visualization
 void renderPointLight() {
     if (!player.active) return;
 
-    // 위치는 update()에서 이미 계산됨 → 여기서는 그대로 사용
+    // Calculate point light position (revolving around player)
+    float angle = gameTime * 2.0f;
+    float radius = 3.0f;
+    pointLight.position = Vec3(
+        player.position.x + cos(angle) * radius,
+        player.position.y + sin(angle * 0.5f) * 1.0f,
+        player.position.z + sin(angle) * radius
+    );
+
+    // Render a small sphere at the light position
     glm::mat4 lightModel = glm::mat4(1.0f);
-    glm::vec3 tmpPos = pointLights[0].position.toGLM();
+    glm::vec3 tmpPos = pointLight.position.toGLM();
+
     lightModel = glm::translate(lightModel, tmpPos);
     lightModel = glm::scale(lightModel, glm::vec3(0.15f, 0.15f, 0.15f));
     glm::mat4 mvp = projectionMatrix * viewMatrix * lightModel;
 
+    // Use glow shader for the light source
     glUseProgram(glowShaderProgram);
     glUniformMatrix4fv(uMVP_glow, 1, GL_FALSE, glm::value_ptr(mvp));
     glUniform3f(uColor_glow,
-        pointLights[0].diffuse.x,
-        pointLights[0].diffuse.y,
-        pointLights[0].diffuse.z);
+        pointLight.diffuse.x,
+        pointLight.diffuse.y,
+        pointLight.diffuse.z);
     glUniform1f(uGlowIntensity, 0.8f + 0.2f * sin(gameTime * 4.0f));
 
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
+    // Enable blending for glowing effect
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
 
@@ -2094,7 +1965,7 @@ void update(float deltaTime) {
     if (player.active) {
         float angle = gameTime * pointLightOrbitSpeed;  // Rotation speed
         float radius = 3.0f;             // Orbit radius
-        pointLights[0].position = Vec3(
+        pointLight.position = Vec3(
             player.position.x + cos(angle) * pointLightOrbitRadius,
             player.position.y + sin(angle * pointLightVerticalSpeed) * 1.0f,
             player.position.z + sin(angle) * pointLightOrbitRadius
@@ -2302,17 +2173,15 @@ void keyboard(unsigned char key, int x, int y) {
     else if (key == 'p' || key == 'P') {
         static bool pointLightEnabled = true;
         pointLightEnabled = !pointLightEnabled;
-        for (int i = 0; i < numActivePointLights; ++i) {
-            pointLights[i].enabled = pointLightEnabled;
-            if (pointLightEnabled) {
-                // initPointLights에서 이미 ambient/diffuse/specular를 세팅했으니
-                // 여기서는 건드릴 필요 없거나, 간단히만 조정
-            }
-            else {
-                pointLights[i].ambient = Vec3(0.0f, 0.0f, 0.0f);
-                pointLights[i].diffuse = Vec3(0.0f, 0.0f, 0.0f);
-                pointLights[i].specular = Vec3(0.0f, 0.0f, 0.0f);
-            }
+        if (pointLightEnabled) {
+            pointLight.ambient = Vec3(0.1f, 0.1f, 0.1f);
+            pointLight.diffuse = Vec3(0.8f, 0.8f, 0.6f);
+            pointLight.specular = Vec3(1.0f, 1.0f, 0.8f);
+        }
+        else {
+            pointLight.ambient = Vec3(0.0f, 0.0f, 0.0f);
+            pointLight.diffuse = Vec3(0.0f, 0.0f, 0.0f);
+            pointLight.specular = Vec3(0.0f, 0.0f, 0.0f);
         }
         std::cout << "Point Light: " << (pointLightEnabled ? "ON" : "OFF") << std::endl;
     }
@@ -2343,7 +2212,7 @@ void keyboard(unsigned char key, int x, int y) {
         showNormalMaps = !showNormalMaps;
 
         for (auto model : { &jetModel, &droneModel, &sphereModel, &starModel,
-                            &donutModel, &triangleModel, &riceModel, &himekaModel }) {
+                          &donutModel, &triangleModel, &riceModel, &himekaModel }) {
             model->hasNormalMap = showNormalMaps && (model->normalMapTexture != defaultNormalMap);
         }
 
@@ -2397,45 +2266,13 @@ void timer(int value) {
 void reshape(int width, int height) {
     glViewport(0, 0, width, height);
 }
-void initPointLights() {
-    // 0번: 기존 플레이어를 도는 라이트
-    pointLights[0].ambient = Vec3(0.05f, 0.05f, 0.05f);
-    pointLights[0].diffuse = Vec3(0.8f, 0.8f, 0.6f);
-    pointLights[0].specular = Vec3(1.0f, 1.0f, 0.8f);
-    pointLights[0].constant = 1.0f;
-    pointLights[0].linear = 0.09f;
-    pointLights[0].quadratic = 0.032f;
-    pointLights[0].enabled = true;
 
-    // 1번: 스테이지 왼쪽 위 코너
-    pointLights[1].position = Vec3(-3.0f, 1.5f, 2.5f);
-    pointLights[1].ambient = Vec3(0.03f, 0.03f, 0.05f);
-    pointLights[1].diffuse = Vec3(0.3f, 0.4f, 0.8f);
-    pointLights[1].specular = Vec3(0.6f, 0.7f, 1.0f);
-    pointLights[1].constant = 1.0f;
-    pointLights[1].linear = 0.14f;
-    pointLights[1].quadratic = 0.07f;
-    pointLights[1].enabled = true;
-
-    // 2번: 스테이지 오른쪽 위 코너
-    pointLights[2].position = Vec3(3.0f, 1.5f, 2.5f);
-    pointLights[2].ambient = Vec3(0.05f, 0.03f, 0.03f);
-    pointLights[2].diffuse = Vec3(0.8f, 0.4f, 0.3f);
-    pointLights[2].specular = Vec3(1.0f, 0.7f, 0.6f);
-    pointLights[2].constant = 1.0f;
-    pointLights[2].linear = 0.14f;
-    pointLights[2].quadratic = 0.07f;
-    pointLights[2].enabled = true;
-
-    numActivePointLights = 3;
-}
 void init() {
     glewInit();
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.0f, 0.0f, 0.1f, 1.0f);
 
     initShaders();  // 이 안에서 defaultTexture, defaultNormalMap 생성됨
-    initPointLights();
     loadModels();   // 이 안에서 실제 텍스처 로딩
 
     enemies.push_back(DestructibleEnemy(-1.0f, 1.0f, 0));
