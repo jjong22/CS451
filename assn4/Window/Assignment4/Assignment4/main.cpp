@@ -11,6 +11,7 @@
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
+#include <map>
 
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -35,6 +36,14 @@ struct Vec3 {
         return Vec3(x * scalar, y * scalar, z * scalar);
     }
 
+    bool operator==(const Vec3& other) const {
+        return x == other.x && y == other.y && z == other.z;
+    }
+
+    bool operator!=(const Vec3& other) const {
+        return !(*this == other);
+    }
+
     float length() const {
         return sqrt(x * x + y * y + z * z);
     }
@@ -56,6 +65,8 @@ class Player;
 extern Player player;
 
 glm::vec3 globalViewPos(0, 0, 8); // TOP_PERSPECTIVE 기본값
+glm::mat4 computeShadowMatrix(const glm::vec3& lightDir, float floorY);
+glm::mat4 computeShadowMatrix(const glm::vec3& lightDir);
 
 // Window size
 const int WINDOW_WIDTH = 800;
@@ -73,7 +84,7 @@ const float GAME_FAR = 2.0f;
 const float PLAYER_SIZE = 0.30f;
 const float BULLET_SIZE = 0.08f;
 const float ATTACK_SIZE = 0.10f;
-const float ENEMY_SIZE = 0.40f;
+const float ENEMY_SIZE = 0.80f;
 const float ORBIT_SIZE = 0.10f;
 
 // Game constants
@@ -131,6 +142,9 @@ struct DirectionalLight {
     }
 };
 
+// 최대 N개의 point light 지원
+const int MAX_POINT_LIGHTS = 4;
+
 struct PointLight {
     Vec3 position;
     Vec3 ambient;
@@ -139,6 +153,7 @@ struct PointLight {
     float constant;
     float linear;
     float quadratic;
+    bool enabled;
 
     PointLight()
         : position(0, 0, 0),
@@ -147,12 +162,24 @@ struct PointLight {
         specular(1.0f, 1.0f, 0.8f),
         constant(1.0f),
         linear(0.09f),
-        quadratic(0.032f) {
+        quadratic(0.032f),
+        enabled(true)
+    {
     }
 };
 
+// === Planar Shadow (Additional Goal) ===
+float floorY = 0.0f;
+float floorZ = -1.0f;  // z = floorZ 에 고정된 평면 (XY 평면)
+glm::vec3 shadowColor(0.0f, 0.0f, 0.0f);
+float shadowAlpha = 0.5f;
+// Dynamic ground plane follows player movement direction
+glm::vec3 groundPlaneNormal(0.0f, 1.0f, 0.0f);  // Dynamic normal
+float groundPlaneDistance = 0.0f;                // Distance from origin
+
 DirectionalLight dirLight;
-PointLight pointLight;
+PointLight pointLights[MAX_POINT_LIGHTS];
+int numActivePointLights = 0;
 
 CameraMode currentCamera = TOP_PERSPECTIVE;
 RenderMode currentRender = OPAQUE_POLYGON;
@@ -169,6 +196,11 @@ GLuint wireframeShaderProgram;
 GLuint hiddenLineShaderProgram;
 GLuint glowShaderProgram;  // Additional: Glow effect shader
 GLuint trailShaderProgram; // Additional: Trail effect shader
+
+GLuint shadowShaderProgram;
+GLint uMVP_shadow;
+GLint uShadowColor;
+GLint uShadowAlpha;
 
 // Shader uniform locations
 GLint uMVP, uColor, uModelMatrix, uTime, uSmoothShading;
@@ -220,8 +252,13 @@ public:
 
     struct Face {
         int v1, v2, v3;
-        int vt1 = -1, vt2 = -1, vt3 = -1;  // Texture coordinate indices
-        int vn1 = -1, vn2 = -1, vn3 = -1;  // Normal indices (optional)
+        int vt1, vt2, vt3;
+        int vn1, vn2, vn3;
+
+        Face() : v1(0), v2(0), v3(0),
+            vt1(-1), vt2(-1), vt3(-1),
+            vn1(-1), vn2(-1), vn3(-1) {
+        }
     };
 
     std::vector<Vertex> vertices;
@@ -283,93 +320,150 @@ public:
                 iss >> normal.x >> normal.y >> normal.z;
                 tempNormals.push_back(normal);
             }
+            // 기존의 else if (type == "f") 블록을 통째로 아래 내용으로 교체
+
             else if (type == "f") {
-                // Face (supports v/vt/vn format)
-                std::string v1, v2, v3;
-                iss >> v1 >> v2 >> v3;
-
-                Face face;
-                int vIdx1, vIdx2, vIdx3;
-                int vtIdx1 = -1, vtIdx2 = -1, vtIdx3 = -1;
-                int vnIdx1 = -1, vnIdx2 = -1, vnIdx3 = -1;
-
-                // Parse v/vt/vn or v//vn or v/vt or just v
-                auto parseFaceVertex = [](const std::string& vertex, int& v, int& vt, int& vn) {
-                    size_t firstSlash = vertex.find('/');
-                    if (firstSlash == std::string::npos) {
-                        // Only vertex index
-                        v = std::stoi(vertex) - 1;
-                    }
-                    else {
-                        v = std::stoi(vertex.substr(0, firstSlash)) - 1;
-                        size_t secondSlash = vertex.find('/', firstSlash + 1);
-                        if (secondSlash == std::string::npos) {
-                            // v/vt format
-                            if (firstSlash + 1 < vertex.length()) {
-                                vt = std::stoi(vertex.substr(firstSlash + 1)) - 1;
-                            }
-                        }
-                        else {
-                            // v/vt/vn or v//vn format
-                            if (secondSlash > firstSlash + 1) {
-                                vt = std::stoi(vertex.substr(firstSlash + 1, secondSlash - firstSlash - 1)) - 1;
-                            }
-                            if (secondSlash + 1 < vertex.length()) {
-                                vn = std::stoi(vertex.substr(secondSlash + 1)) - 1;
-                            }
-                        }
-                    }
-                    };
-
-                parseFaceVertex(v1, vIdx1, vtIdx1, vnIdx1);
-                parseFaceVertex(v2, vIdx2, vtIdx2, vnIdx2);
-                parseFaceVertex(v3, vIdx3, vtIdx3, vnIdx3);
-
-                face.v1 = vIdx1;
-                face.v2 = vIdx2;
-                face.v3 = vIdx3;
-
-                // Store texture coordinate indices if available
-                if (vtIdx1 >= 0 && vtIdx2 >= 0 && vtIdx3 >= 0) {
-                    face.vt1 = vtIdx1;
-                    face.vt2 = vtIdx2;
-                    face.vt3 = vtIdx3;
+                // 한 줄에 있는 모든 정점 데이터를 읽음
+                std::vector<std::string> faceVerts;
+                std::string vertStr;
+                while (iss >> vertStr) {
+                    faceVerts.push_back(vertStr);
                 }
 
-                faces.push_back(face);
+                // 삼각형(3개) 혹은 사각형(4개) 이상인 경우 처리
+                // (Triangle Fan 방식으로 쪼갭니다: 0-1-2, 0-2-3, 0-3-4 ...)
+                for (size_t i = 0; i < faceVerts.size() - 2; ++i) {
+                    std::string vStr[3] = { faceVerts[0], faceVerts[i + 1], faceVerts[i + 2] };
+
+                    Face face;
+                    int vIdx[3], vtIdx[3] = { -1,-1,-1 }, vnIdx[3] = { -1,-1,-1 };
+
+                    // 3개의 정점 파싱
+                    for (int j = 0; j < 3; ++j) {
+                        size_t firstSlash = vStr[j].find('/');
+                        if (firstSlash == std::string::npos) {
+                            vIdx[j] = std::stoi(vStr[j]) - 1;
+                        }
+                        else {
+                            vIdx[j] = std::stoi(vStr[j].substr(0, firstSlash)) - 1;
+                            size_t secondSlash = vStr[j].find('/', firstSlash + 1);
+                            if (secondSlash == std::string::npos) {
+                                if (firstSlash + 1 < vStr[j].length())
+                                    vtIdx[j] = std::stoi(vStr[j].substr(firstSlash + 1)) - 1;
+                            }
+                            else {
+                                if (secondSlash > firstSlash + 1)
+                                    vtIdx[j] = std::stoi(vStr[j].substr(firstSlash + 1, secondSlash - firstSlash - 1)) - 1;
+                                if (secondSlash + 1 < vStr[j].length())
+                                    vnIdx[j] = std::stoi(vStr[j].substr(secondSlash + 1)) - 1;
+                            }
+                        }
+                    }
+
+                    face.v1 = vIdx[0]; face.v2 = vIdx[1]; face.v3 = vIdx[2];
+                    face.vt1 = vtIdx[0]; face.vt2 = vtIdx[1]; face.vt3 = vtIdx[2];
+                    face.vn1 = vnIdx[0]; face.vn2 = vnIdx[1]; face.vn3 = vnIdx[2];
+
+                    faces.push_back(face);
+                }
             }
         }
         file.close();
 
-        // Copy vertices
-        vertices = tempVertices;
+        // (1) 일단 기존 데이터 비우기
+        vertices.clear();
+        normals.clear();
+        vertexData.clear();
+        normalData.clear();
+        texCoords.clear();
+        indices.clear();
 
-        // Process texture coordinates
-        if (!tempTexCoords.empty()) {
-            hasTexCoords = true;
-            // We'll organize these when processing faces
-        }
-        else {
-            hasTexCoords = false;
+        // (2) (v, vt, vn) 조합을 key로 쓰기 위한 구조체
+        struct VertexKey {
+            int v, vt, vn;
+            bool operator<(const VertexKey& other) const {
+                if (v != other.v) return v < other.v;
+                if (vt != other.vt) return vt < other.vt;
+                return vn < other.vn;
+            }
         };
 
-        // Process normals from file or calculate them
-        if (!tempNormals.empty()) {
-            // Use normals from file (smooth normals)
-            normals.resize(vertices.size());
-            for (const auto& face : faces) {
-                // Average normals for each vertex (simple approach)
-                // Note: More sophisticated approach would handle per-face-vertex normals
+        std::map<VertexKey, unsigned int> vertexMap;
+        unsigned int nextIndex = 0;
+
+        // (3) faces를 돌면서 (v,vt,vn) 조합 기준으로 정점 재구성
+        for (const auto& face : faces) {
+            int vs[3] = { face.v1,  face.v2,  face.v3 };
+            int vts[3] = { face.vt1, face.vt2, face.vt3 };
+            int vns[3] = { face.vn1, face.vn2, face.vn3 };
+
+            for (int i = 0; i < 3; ++i) {
+                VertexKey key{ vs[i], vts[i], vns[i] };
+
+                auto it = vertexMap.find(key);
+                if (it == vertexMap.end()) {
+                    // 새 조합이면 새로운 정점 생성
+                    int vIdx = key.v;
+                    int vtIdx = key.vt;
+                    int vnIdx = key.vn;
+
+                    // 안전 체크
+                    if (vIdx < 0 || vIdx >= (int)tempVertices.size()) continue;
+
+                    const auto& pos = tempVertices[vIdx];
+                    glm::vec2 uv(0.0f, 0.0f);
+                    if (vtIdx >= 0 && vtIdx < (int)tempTexCoords.size()) {
+                        uv.x = tempTexCoords[vtIdx].first;
+                        uv.y = tempTexCoords[vtIdx].second;
+                    }
+                    glm::vec3 nor(0.0f, 0.0f, 1.0f);
+                    if (vnIdx >= 0 && vnIdx < (int)tempNormals.size()) {
+                        nor.x = tempNormals[vnIdx].x;
+                        nor.y = tempNormals[vnIdx].y;
+                        nor.z = tempNormals[vnIdx].z;
+                    }
+
+                    // vertices / normals 벡터에도 저장 (계산용)
+                    vertices.push_back({ pos.x, pos.y, pos.z });
+                    normals.push_back({ nor.x, nor.y, nor.z });
+
+                    // VBO용 배열 저장
+                    vertexData.push_back(pos.x);
+                    vertexData.push_back(pos.y);
+                    vertexData.push_back(pos.z);
+
+                    normalData.push_back(nor.x);
+                    normalData.push_back(nor.y);
+                    normalData.push_back(nor.z);
+
+                    texCoords.push_back(uv.x);
+                    texCoords.push_back(uv.y);
+
+                    unsigned int newIndex = nextIndex++;
+                    vertexMap[key] = newIndex;
+                    indices.push_back(newIndex);
+                }
+                else {
+                    // 이미 있는 (v,vt,vn) 조합이면 기존 인덱스 재사용
+                    indices.push_back(it->second);
+                }
             }
         }
 
+        hasTexCoords = !tempTexCoords.empty();
+
         std::cout << "Loaded " << filename << ": "
-            << vertices.size() << " vertices, "
+            << vertices.size() << " unique vertices, "
             << faces.size() << " faces, "
             << tempTexCoords.size() << " texture coords" << std::endl;
 
-        calculateNormals();
-        setupBuffers(tempTexCoords);
+        // 노말이 없는 모델이면 여기서 다시 계산해도 됨 (있으면 normals 이미 채워짐)
+        if (tempNormals.empty()) {
+            calculateNormals(); // 필요 없으면 생략 가능
+        }
+
+        // 새로 구성한 데이터로 버퍼 생성
+        setupBuffers(tempTexCoords);  // 인자 없이 호출하도록 오버로드가 있다면 그 버전 사용
         return true;
     }
 
@@ -743,14 +837,20 @@ uniform vec3 uDirLight_ambient;
 uniform vec3 uDirLight_diffuse;
 uniform vec3 uDirLight_specular;
 
-// Point light
-uniform vec3 uPointLight_position;
-uniform vec3 uPointLight_ambient;
-uniform vec3 uPointLight_diffuse;
-uniform vec3 uPointLight_specular;
-uniform float uPointLight_constant;
-uniform float uPointLight_linear;
-uniform float uPointLight_quadratic;
+const int MAX_POINT_LIGHTS = 4;
+
+struct PointLight {
+    vec3 position;
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+    float constant;
+    float linear;
+    float quadratic;
+};
+
+uniform int uNumPointLights;
+uniform PointLight uPointLights[MAX_POINT_LIGHTS];
 
 out vec3 vertexColor;
 out vec2 TexCoord;
@@ -773,25 +873,25 @@ vec3 calcDirectionalLight(vec3 normal, vec3 viewDir) {
     return ambient + diffuse + specular;
 }
 
-vec3 calcPointLight(vec3 fragPos, vec3 normal, vec3 viewDir) {
-    vec3 lightDir = normalize(uPointLight_position - fragPos);
-    float distance = length(uPointLight_position - fragPos);
-    float attenuation = 1.0 / (uPointLight_constant + uPointLight_linear * distance + 
-                                uPointLight_quadratic * distance * distance);
-    
-    // Ambient
-    vec3 ambient = uPointLight_ambient * uObjectColor;
-    
-    // Diffuse
-    float diff = max(dot(normal, lightDir), 0.0);
-    vec3 diffuse = uPointLight_diffuse * diff * uObjectColor;
-    
-    // Specular (Blinn-Phong)
-    vec3 halfwayDir = normalize(lightDir + viewDir);
-    float spec = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
-    vec3 specular = uPointLight_specular * spec;
-    
-    return (ambient + diffuse + specular) * attenuation;
+vec3 calcPointLights(vec3 fragPos, vec3 normal, vec3 viewDir) {
+    vec3 sum = vec3(0.0);
+    for (int i = 0; i < uNumPointLights; ++i) {
+        vec3 lightDir = normalize(uPointLights[i].position - fragPos);
+        float distance = length(uPointLights[i].position - fragPos);
+        float attenuation = 1.0 / (uPointLights[i].constant
+                                   + uPointLights[i].linear * distance
+                                   + uPointLights[i].quadratic * distance * distance);
+
+        vec3 ambient  = uPointLights[i].ambient * uObjectColor;
+        float diff    = max(dot(normal, lightDir), 0.0);
+        vec3 diffuse  = uPointLights[i].diffuse * diff * uObjectColor;
+        vec3 halfwayDir = normalize(lightDir + viewDir);
+        float spec   = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
+        vec3 specular = uPointLights[i].specular * spec;
+
+        sum += (ambient + diffuse + specular) * attenuation;
+    }
+    return sum;
 }
 
 void main() {
@@ -800,11 +900,10 @@ void main() {
     vec3 FragPos = vec3(uModelMatrix * vec4(aPos, 1.0));
     vec3 Normal = normalize(uNormalMatrix * aNormal);
     vec3 viewDir = normalize(uViewPos - FragPos);
-    
+
     // Calculate lighting in vertex shader (Gouraud)
     vec3 result = calcDirectionalLight(Normal, viewDir);
-    result += calcPointLight(FragPos, Normal, viewDir);
-    
+    result += calcPointLights(FragPos, Normal, viewDir);
     vertexColor = result;
     TexCoord = aTexCoord;
 }
@@ -869,14 +968,20 @@ uniform vec3 uDirLight_ambient;
 uniform vec3 uDirLight_diffuse;
 uniform vec3 uDirLight_specular;
 
-// Point light
-uniform vec3 uPointLight_position;
-uniform vec3 uPointLight_ambient;
-uniform vec3 uPointLight_diffuse;
-uniform vec3 uPointLight_specular;
-uniform float uPointLight_constant;
-uniform float uPointLight_linear;
-uniform float uPointLight_quadratic;
+const int MAX_POINT_LIGHTS = 4;
+
+struct PointLight {
+    vec3 position;
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+    float constant;
+    float linear;
+    float quadratic;
+};
+
+uniform int uNumPointLights;
+uniform PointLight uPointLights[MAX_POINT_LIGHTS];
 
 uniform sampler2D uTexture;
 
@@ -898,25 +1003,29 @@ vec3 calcDirectionalLight(vec3 normal, vec3 viewDir) {
     return ambient + diffuse + specular;
 }
 
-vec3 calcPointLight(vec3 normal, vec3 viewDir) {
-    vec3 lightDir = normalize(uPointLight_position - FragPos);
-    float distance = length(uPointLight_position - FragPos);
-    float attenuation = 1.0 / (uPointLight_constant + uPointLight_linear * distance + 
-                                uPointLight_quadratic * distance * distance);
-    
-    // Ambient
-    vec3 ambient = uPointLight_ambient * uObjectColor;
-    
-    // Diffuse
-    float diff = max(dot(normal, lightDir), 0.0);
-    vec3 diffuse = uPointLight_diffuse * diff * uObjectColor;
-    
-    // Specular (Blinn-Phong)
-    vec3 halfwayDir = normalize(lightDir + viewDir);
-    float spec = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
-    vec3 specular = uPointLight_specular * spec;
-    
-    return (ambient + diffuse + specular) * attenuation;
+vec3 calcPointLights(vec3 normal, vec3 viewDir) {
+    vec3 sum = vec3(0.0);
+
+    for (int i = 0; i < uNumPointLights; ++i) {
+        vec3 lightDir = normalize(uPointLights[i].position - FragPos);
+        float distance = length(uPointLights[i].position - FragPos);
+        float attenuation = 1.0 / (uPointLights[i].constant
+                                   + uPointLights[i].linear * distance
+                                   + uPointLights[i].quadratic * distance * distance);
+
+        vec3 ambient  = uPointLights[i].ambient * uObjectColor;
+
+        float diff    = max(dot(normal, lightDir), 0.0);
+        vec3 diffuse  = uPointLights[i].diffuse * diff * uObjectColor;
+
+        vec3 halfwayDir = normalize(lightDir + viewDir);
+        float spec   = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
+        vec3 specular = uPointLights[i].specular * spec;
+
+        sum += (ambient + diffuse + specular) * attenuation;
+    }
+
+    return sum;
 }
 
 void main() {
@@ -925,7 +1034,7 @@ void main() {
     
     // Calculate lighting in fragment shader (Phong)
     vec3 result = calcDirectionalLight(norm, viewDir);
-    result += calcPointLight(norm, viewDir);
+    result += calcPointLights(norm, viewDir);
     
     vec4 texColor = texture(uTexture, TexCoord);
     FragColor = vec4(result, 1.0) * texColor;
@@ -985,14 +1094,20 @@ uniform vec3 uDirLight_ambient;
 uniform vec3 uDirLight_diffuse;
 uniform vec3 uDirLight_specular;
 
-// Point light
-uniform vec3 uPointLight_position;
-uniform vec3 uPointLight_ambient;
-uniform vec3 uPointLight_diffuse;
-uniform vec3 uPointLight_specular;
-uniform float uPointLight_constant;
-uniform float uPointLight_linear;
-uniform float uPointLight_quadratic;
+const int MAX_POINT_LIGHTS = 4;
+
+struct PointLight {
+    vec3 position;
+    vec3 ambient;
+    vec3 diffuse;
+    vec3 specular;
+    float constant;
+    float linear;
+    float quadratic;
+};
+
+uniform int uNumPointLights;
+uniform PointLight uPointLights[MAX_POINT_LIGHTS];
 
 uniform sampler2D uTexture;
 uniform sampler2D uNormalMap;
@@ -1016,25 +1131,29 @@ vec3 calcDirectionalLight(vec3 normal, vec3 viewDir) {
     return ambient + diffuse + specular;
 }
 
-vec3 calcPointLight(vec3 normal, vec3 viewDir) {
-    vec3 lightDir = normalize(uPointLight_position - FragPos);
-    float distance = length(uPointLight_position - FragPos);
-    float attenuation = 1.0 / (uPointLight_constant + uPointLight_linear * distance + 
-                                uPointLight_quadratic * distance * distance);
-    
-    // Ambient
-    vec3 ambient = uPointLight_ambient * uObjectColor;
-    
-    // Diffuse
-    float diff = max(dot(normal, lightDir), 0.0);
-    vec3 diffuse = uPointLight_diffuse * diff * uObjectColor;
-    
-    // Specular (Blinn-Phong)
-    vec3 halfwayDir = normalize(lightDir + viewDir);
-    float spec = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
-    vec3 specular = uPointLight_specular * spec;
-    
-    return (ambient + diffuse + specular) * attenuation;
+vec3 calcPointLights(vec3 normal, vec3 viewDir) {
+    vec3 sum = vec3(0.0);
+
+    for (int i = 0; i < uNumPointLights; ++i) {
+        vec3 lightDir = normalize(uPointLights[i].position - FragPos);
+        float distance = length(uPointLights[i].position - FragPos);
+        float attenuation = 1.0 / (uPointLights[i].constant
+                                   + uPointLights[i].linear * distance
+                                   + uPointLights[i].quadratic * distance * distance);
+
+        vec3 ambient  = uPointLights[i].ambient * uObjectColor;
+
+        float diff    = max(dot(normal, lightDir), 0.0);
+        vec3 diffuse  = uPointLights[i].diffuse * diff * uObjectColor;
+
+        vec3 halfwayDir = normalize(lightDir + viewDir);
+        float spec   = pow(max(dot(normal, halfwayDir), 0.0), 32.0);
+        vec3 specular = uPointLights[i].specular * spec;
+
+        sum += (ambient + diffuse + specular) * attenuation;
+    }
+
+    return sum;
 }
 
 void main() {
@@ -1052,7 +1171,7 @@ void main() {
     
     // Calculate lighting with normal-mapped surface
     vec3 result = calcDirectionalLight(norm, viewDir);
-    result += calcPointLight(norm, viewDir);
+    result += calcPointLights(norm, viewDir);
     
     vec4 texColor = texture(uTexture, TexCoord);
     FragColor = vec4(result, 1.0) * texColor;
@@ -1136,6 +1255,29 @@ void main() {
     FragColor = vec4(uColor, uAlpha);
 }
 )";
+    // ==================== SHADOW SHADER (planar) ====================
+    const char* shadowVertexSource = R"(
+#version 330 core
+layout (location = 0) in vec3 aPos;
+
+uniform mat4 uMVP;
+
+void main() {
+    gl_Position = uMVP * vec4(aPos, 1.0);
+}
+)";
+
+    const char* shadowFragmentSource = R"(
+#version 330 core
+out vec4 FragColor;
+
+uniform vec3 uShadowColor;
+uniform float uShadowAlpha;
+
+void main() {
+    FragColor = vec4(uShadowColor, uShadowAlpha);
+}
+)";
 
     trailShaderProgram = createShaderProgram(trailVertexSource, trailFragmentSource);
     uMVP_trail = glGetUniformLocation(trailShaderProgram, "uMVP");
@@ -1145,6 +1287,11 @@ void main() {
     // Create default textures
     defaultTexture = createDefaultTexture();
     defaultNormalMap = createDefaultNormalMap();
+
+    shadowShaderProgram = createShaderProgram(shadowVertexSource, shadowFragmentSource);
+    uMVP_shadow = glGetUniformLocation(shadowShaderProgram, "uMVP");
+    uShadowColor = glGetUniformLocation(shadowShaderProgram, "uShadowColor");
+    uShadowAlpha = glGetUniformLocation(shadowShaderProgram, "uShadowAlpha");
 }
 
 
@@ -1220,6 +1367,7 @@ public:
         glm::mat4 mvp = projectionMatrix * viewMatrix * modelMatrix;
 
         if (currentRender == OPAQUE_POLYGON) {
+            // ===== 1. 본체 렌더 =====
             // Select shader based on shading mode
             GLuint currentProgram;
             switch (currentShading) {
@@ -1262,20 +1410,27 @@ public:
             glm::vec3 dirLightSpecular = dirLight.specular.toGLM();
             glUniform3fv(glGetUniformLocation(currentProgram, "uDirLight_specular"), 1, glm::value_ptr(dirLightSpecular));
 
-            glm::vec3 pointLightPosition = pointLight.position.toGLM();
-            glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_position"), 1, glm::value_ptr(pointLightPosition));
+            // === Multiple Point Lights ===
+            glUniform1i(glGetUniformLocation(currentProgram, "uNumPointLights"), numActivePointLights);
 
-            glm::vec3 pointLightAmbient = pointLight.ambient.toGLM();
-            glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_ambient"), 1, glm::value_ptr(pointLightAmbient));
+            for (int i = 0; i < numActivePointLights; ++i) {
+                if (!pointLights[i].enabled) continue;
 
-            glm::vec3 pointLightDiffuse = pointLight.diffuse.toGLM();
-            glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_diffuse"), 1, glm::value_ptr(pointLightDiffuse));
+                std::string base = "uPointLights[" + std::to_string(i) + "]";
 
-            glm::vec3 pointLightSpecular = pointLight.specular.toGLM();
-            glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_specular"), 1, glm::value_ptr(pointLightSpecular));
-            glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_constant"), pointLight.constant);
-            glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_linear"), pointLight.linear);
-            glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_quadratic"), pointLight.quadratic);
+                glm::vec3 pos = pointLights[i].position.toGLM();
+                glm::vec3 amb = pointLights[i].ambient.toGLM();
+                glm::vec3 diff = pointLights[i].diffuse.toGLM();
+                glm::vec3 spec = pointLights[i].specular.toGLM();
+
+                glUniform3fv(glGetUniformLocation(currentProgram, (base + ".position").c_str()), 1, glm::value_ptr(pos));
+                glUniform3fv(glGetUniformLocation(currentProgram, (base + ".ambient").c_str()), 1, glm::value_ptr(amb));
+                glUniform3fv(glGetUniformLocation(currentProgram, (base + ".diffuse").c_str()), 1, glm::value_ptr(diff));
+                glUniform3fv(glGetUniformLocation(currentProgram, (base + ".specular").c_str()), 1, glm::value_ptr(spec));
+                glUniform1f(glGetUniformLocation(currentProgram, (base + ".constant").c_str()), pointLights[i].constant);
+                glUniform1f(glGetUniformLocation(currentProgram, (base + ".linear").c_str()), pointLights[i].linear);
+                glUniform1f(glGetUniformLocation(currentProgram, (base + ".quadratic").c_str()), pointLights[i].quadratic);
+            }
 
             // Textures
             glActiveTexture(GL_TEXTURE0);
@@ -1300,10 +1455,31 @@ public:
                 glUniform1i(glGetUniformLocation(currentProgram, "uNormalMap"), 1);
             }
 
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            model->render();
 
+            // ===== 2. 그림자 렌더 =====
+            glm::vec3 lightDir = dirLight.direction.toGLM();
+            glm::mat4 shadowMat = computeShadowMatrix(lightDir);
+            glm::mat4 shadowModel = shadowMat * modelMatrix;
+            glm::mat4 shadowMVP = projectionMatrix * viewMatrix * shadowModel;
+
+            glUseProgram(shadowShaderProgram);
+            glUniformMatrix4fv(uMVP_shadow, 1, GL_FALSE, glm::value_ptr(shadowMVP));
+            glUniform3fv(uShadowColor, 1, glm::value_ptr(shadowColor));
+            glUniform1f(uShadowAlpha, shadowAlpha);
+
+            glEnable(GL_POLYGON_OFFSET_FILL);
+            glPolygonOffset(1.0f, 1.0f);
+
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             model->render();
+
+            glDisable(GL_BLEND);
+            glDisable(GL_POLYGON_OFFSET_FILL);
         }
         else if (currentRender == WIREFRAME) {
             glUseProgram(wireframeShaderProgram);
@@ -1328,8 +1504,6 @@ public:
             glDisable(GL_POLYGON_OFFSET_LINE);
         }
     }
-
-
     bool checkCollision(const GameObject& other) const {
         float distance = (position - other.position).length();
         return distance < (size + other.size);
@@ -1425,7 +1599,10 @@ public:
             );
             orbitEntities[i].targetRotation.y = gameTime * 180.0f;
         }
-
+        // Update movement direction for dynamic ground plane
+        if (position != lastPosition) {
+            velocity = (position - lastPosition).normalize();
+        }
         lastPosition = position;
     }
 
@@ -1607,44 +1784,50 @@ public:
                 glm::vec3 dirLightSpecular = dirLight.specular.toGLM();
                 glUniform3fv(glGetUniformLocation(currentProgram, "uDirLight_specular"), 1, glm::value_ptr(dirLightSpecular));
 
-                glm::vec3 pointLightPosition = pointLight.position.toGLM();
-                glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_position"), 1, glm::value_ptr(pointLightPosition));
+                // === Multiple Point Lights ===
+                glUniform1i(glGetUniformLocation(currentProgram, "uNumPointLights"), numActivePointLights);
 
-                glm::vec3 pointLightAmbient = pointLight.ambient.toGLM();
-                glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_ambient"), 1, glm::value_ptr(pointLightAmbient));
+                for (int i = 0; i < numActivePointLights; ++i) {
+                    if (!pointLights[i].enabled) continue;
 
-                glm::vec3 pointLightDiffuse = pointLight.diffuse.toGLM();
-                glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_diffuse"), 1, glm::value_ptr(pointLightDiffuse));
+                    std::string base = "uPointLights[" + std::to_string(i) + "]";
 
-                glm::vec3 pointLightSpecular = pointLight.specular.toGLM();
-                glUniform3fv(glGetUniformLocation(currentProgram, "uPointLight_specular"), 1, glm::value_ptr(pointLightSpecular));
-                glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_constant"), pointLight.constant);
-                glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_linear"), pointLight.linear);
-                glUniform1f(glGetUniformLocation(currentProgram, "uPointLight_quadratic"), pointLight.quadratic);
+                    glm::vec3 pos = pointLights[i].position.toGLM();
+                    glm::vec3 amb = pointLights[i].ambient.toGLM();
+                    glm::vec3 diff = pointLights[i].diffuse.toGLM();
+                    glm::vec3 spec = pointLights[i].specular.toGLM();
 
-                // Textures
-                glActiveTexture(GL_TEXTURE0);
-                if (part.model->diffuseTexture != 0) {
-                    glBindTexture(GL_TEXTURE_2D, part.model->diffuseTexture);
-                }
-                else {
-                    glBindTexture(GL_TEXTURE_2D, defaultTexture);
-                }
-                glUniform1i(glGetUniformLocation(currentProgram, "uTexture"), 0);
+                    glUniform3fv(glGetUniformLocation(currentProgram, (base + ".position").c_str()), 1, glm::value_ptr(pos));
+                    glUniform3fv(glGetUniformLocation(currentProgram, (base + ".ambient").c_str()), 1, glm::value_ptr(amb));
+                    glUniform3fv(glGetUniformLocation(currentProgram, (base + ".diffuse").c_str()), 1, glm::value_ptr(diff));
+                    glUniform3fv(glGetUniformLocation(currentProgram, (base + ".specular").c_str()), 1, glm::value_ptr(spec));
+                    glUniform1f(glGetUniformLocation(currentProgram, (base + ".constant").c_str()), pointLights[i].constant);
+                    glUniform1f(glGetUniformLocation(currentProgram, (base + ".linear").c_str()), pointLights[i].linear);
+                    glUniform1f(glGetUniformLocation(currentProgram, (base + ".quadratic").c_str()), pointLights[i].quadratic);
 
-                if (currentShading == PHONG_NORMAL_MAP) {
-                    glActiveTexture(GL_TEXTURE1);
-                    if (part.model->normalMapTexture != 0) {
-                        glBindTexture(GL_TEXTURE_2D, part.model->normalMapTexture);
-                        glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), part.model->hasNormalMap ? 1 : 0);
+                    // Textures
+                    glActiveTexture(GL_TEXTURE0);
+                    if (part.model->diffuseTexture != 0) {
+                        glBindTexture(GL_TEXTURE_2D, part.model->diffuseTexture);
                     }
                     else {
-                        glBindTexture(GL_TEXTURE_2D, defaultNormalMap);
-                        glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), 0);
+                        glBindTexture(GL_TEXTURE_2D, defaultTexture);
                     }
-                    glUniform1i(glGetUniformLocation(currentProgram, "uNormalMap"), 1);
-                }
+                    glUniform1i(glGetUniformLocation(currentProgram, "uTexture"), 0);
 
+                    if (currentShading == PHONG_NORMAL_MAP) {
+                        glActiveTexture(GL_TEXTURE1);
+                        if (part.model->normalMapTexture != 0) {
+                            glBindTexture(GL_TEXTURE_2D, part.model->normalMapTexture);
+                            glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), part.model->hasNormalMap ? 1 : 0);
+                        }
+                        else {
+                            glBindTexture(GL_TEXTURE_2D, defaultNormalMap);
+                            glUniform1i(glGetUniformLocation(currentProgram, "uHasNormalMap"), 0);
+                        }
+                        glUniform1i(glGetUniformLocation(currentProgram, "uNormalMap"), 1);
+                    }
+                } // 💡 이 닫는 괄호가 누락되어 있었습니다.
 
                 glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
                 part.model->render();
@@ -1835,76 +2018,115 @@ void renderBoundary() {
     glDeleteBuffers(1, &boundaryVBO);
 }
 
-// ADDITIONAL GOAL 3: Render trail system
-void renderTrails() {
-    if (!trailEffectEnabled || trailPoints.empty()) return;
+// Render fixed ground plane on XY plane at z = floorZ
+void renderGroundPlane() {
+    static GLuint groundVAO = 0;
+    static GLuint groundVBO = 0;
+    static GLuint groundEBO = 0;
 
-    glEnable(GL_BLEND);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    if (groundVAO == 0) {
+        glGenVertexArrays(1, &groundVAO);
+        glGenBuffers(1, &groundVBO);
+        glGenBuffers(1, &groundEBO);
 
-    for (const auto& trail : trailPoints) {
-        float alpha = trail.life / trail.maxLife;
+        glBindVertexArray(groundVAO);
 
-        // Simple sphere for trail points
-        glm::mat4 model = glm::mat4(1.0f);
-        glm::vec3 tmpPos = trail.position.toGLM();
+        // z = floorZ 에서 XY 평면에 놓인 큰 quad
+        float z = floorZ;
 
-        model = glm::translate(model, tmpPos);
-        model = glm::scale(model, glm::vec3(0.03f, 0.03f, 0.03f));
-        glm::mat4 mvp = projectionMatrix * viewMatrix * model;
+        // 화면 전체를 충분히 덮도록 X,Y 범위는 게임 경계에 맞춤
+        float groundVertices[] = {
+            // positions (x, y, z)
+            GAME_LEFT,  GAME_BOTTOM, z,  // 0
+            GAME_RIGHT, GAME_BOTTOM, z,  // 1
+            GAME_RIGHT, GAME_TOP,    z,  // 2
+            GAME_LEFT,  GAME_TOP,    z   // 3
+        };
 
-        glUseProgram(trailShaderProgram);
-        glUniformMatrix4fv(uMVP_trail, 1, GL_FALSE, glm::value_ptr(mvp));
-        glUniform3f(uColor_trail, trail.color.x, trail.color.y, trail.color.z);
-        glUniform1f(uAlpha_trail, alpha);
+        unsigned int groundIndices[] = {
+            0, 1, 2,
+            0, 2, 3
+        };
 
-        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-        sphereModel.render();
+        glBindBuffer(GL_ARRAY_BUFFER, groundVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(groundVertices), groundVertices, GL_STATIC_DRAW);
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, groundEBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(groundIndices), groundIndices, GL_STATIC_DRAW);
+
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+
+        glBindVertexArray(0);
     }
 
-    glDisable(GL_BLEND);
+    glm::mat4 model = glm::mat4(1.0f);
+    glm::mat4 mvp = projectionMatrix * viewMatrix * model;
+
+    glUseProgram(wireframeShaderProgram); // uMVP, uColor 사용
+    glUniformMatrix4fv(uMVP_wire, 1, GL_FALSE, glm::value_ptr(mvp));
+    glUniform3f(uColor_wire, 0.12f, 0.12f, 0.15f); // 어두운 회색 바닥
+
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(1.0f, 1.0f);
+
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glBindVertexArray(groundVAO);
+    glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    glBindVertexArray(0);
+
+    glDisable(GL_POLYGON_OFFSET_FILL);
+}
+
+// z = floorZ 평면(XY plane)에 대한 shadow projection matrix (directional light 기준)
+glm::mat4 computeShadowMatrix(const glm::vec3& lightDir) {
+    // Plane: z = floorZ → (0, 0, 1, -floorZ)
+    glm::vec4 plane(0.0f, 0.0f, 1.0f, -floorZ);
+    glm::vec4 L(lightDir.x, lightDir.y, lightDir.z, 0.0f); // directional light (w=0)
+
+    float dotPL = glm::dot(plane, L);
+
+    glm::mat4 S(1.0f);
+    S[0][0] = dotPL - L.x * plane.x; S[0][1] = -L.x * plane.y; S[0][2] = -L.x * plane.z; S[0][3] = -L.x * plane.w;
+    S[1][0] = -L.y * plane.x; S[1][1] = dotPL - L.y * plane.y; S[1][2] = -L.y * plane.z; S[1][3] = -L.y * plane.w;
+    S[2][0] = -L.z * plane.x; S[2][1] = -L.z * plane.y; S[2][2] = dotPL - L.z * plane.z; S[2][3] = -L.z * plane.w;
+    S[3][0] = -L.w * plane.x; S[3][1] = -L.w * plane.y; S[3][2] = -L.w * plane.z; S[3][3] = dotPL - L.w * plane.w;
+
+    return S;
 }
 
 // Render point light visualization
 void renderPointLight() {
     if (!player.active) return;
 
-    // Calculate point light position (revolving around player)
-    float angle = gameTime * 2.0f;
-    float radius = 3.0f;
-    pointLight.position = Vec3(
-        player.position.x + cos(angle) * radius,
-        player.position.y + sin(angle * 0.5f) * 1.0f,
-        player.position.z + sin(angle) * radius
-    );
-
-    // Render a small sphere at the light position
-    glm::mat4 lightModel = glm::mat4(1.0f);
-    glm::vec3 tmpPos = pointLight.position.toGLM();
-
-    lightModel = glm::translate(lightModel, tmpPos);
-    lightModel = glm::scale(lightModel, glm::vec3(0.15f, 0.15f, 0.15f));
-    glm::mat4 mvp = projectionMatrix * viewMatrix * lightModel;
-
-    // Use glow shader for the light source
     glUseProgram(glowShaderProgram);
-    glUniformMatrix4fv(uMVP_glow, 1, GL_FALSE, glm::value_ptr(mvp));
-    glUniform3f(uColor_glow,
-        pointLight.diffuse.x,
-        pointLight.diffuse.y,
-        pointLight.diffuse.z);
-    glUniform1f(uGlowIntensity, 0.8f + 0.2f * sin(gameTime * 4.0f));
-
-    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-
-    // Enable blending for glowing effect
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE);
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
-    sphereModel.render();
+    // 0번과 1번 라이트 두 개를 모두 시각화
+    for (int i = 0; i < 2; ++i) {
+        if (!pointLights[i].enabled) continue;
+
+        glm::mat4 lightModel = glm::mat4(1.0f);
+        glm::vec3 tmpPos = pointLights[i].position.toGLM();
+        lightModel = glm::translate(lightModel, tmpPos);
+        lightModel = glm::scale(lightModel, glm::vec3(0.15f, 0.15f, 0.15f));
+        glm::mat4 mvp = projectionMatrix * viewMatrix * lightModel;
+
+        glUniformMatrix4fv(uMVP_glow, 1, GL_FALSE, glm::value_ptr(mvp));
+        glUniform3f(uColor_glow,
+            pointLights[i].diffuse.x,
+            pointLights[i].diffuse.y,
+            pointLights[i].diffuse.z);
+        glUniform1f(uGlowIntensity, 0.8f + 0.2f * sin(gameTime * 4.0f));
+
+        sphereModel.render();
+    }
 
     glDisable(GL_BLEND);
 }
+
 
 // Render directional light debug visualization (optional)
 void renderDirectionalLight() {
@@ -1948,6 +2170,36 @@ void renderDirectionalLight() {
     glDeleteBuffers(1, &lineVBO);
 }
 
+// ADDITIONAL GOAL 3: Render trail system
+void renderTrails() {
+    if (!trailEffectEnabled || trailPoints.empty()) return;
+
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    for (const auto& trail : trailPoints) {
+        float alpha = trail.life / trail.maxLife;
+
+        // Simple sphere for trail points
+        glm::mat4 model = glm::mat4(1.0f);
+        glm::vec3 tmpPos = trail.position.toGLM();
+
+        model = glm::translate(model, tmpPos);
+        model = glm::scale(model, glm::vec3(0.03f, 0.03f, 0.03f));
+        glm::mat4 mvp = projectionMatrix * viewMatrix * model;
+
+        glUseProgram(trailShaderProgram);
+        glUniformMatrix4fv(uMVP_trail, 1, GL_FALSE, glm::value_ptr(mvp));
+        glUniform3f(uColor_trail, trail.color.x, trail.color.y, trail.color.z);
+        glUniform1f(uAlpha_trail, alpha);
+
+        glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+        sphereModel.render();
+    }
+
+    glDisable(GL_BLEND);
+}
+
 void update(float deltaTime) {
     if (gameOver || gameWon) return;
 
@@ -1965,10 +2217,18 @@ void update(float deltaTime) {
     if (player.active) {
         float angle = gameTime * pointLightOrbitSpeed;  // Rotation speed
         float radius = 3.0f;             // Orbit radius
-        pointLight.position = Vec3(
+        pointLights[0].position = Vec3(
             player.position.x + cos(angle) * pointLightOrbitRadius,
             player.position.y + sin(angle * pointLightVerticalSpeed) * 1.0f,
             player.position.z + sin(angle) * pointLightOrbitRadius
+        );
+
+        // 1번: 위상만 다른 동일한 라이트 하나 더
+        float angle1 = angle + M_PI; // 180도 반대 위치에서 회전
+        pointLights[1].position = Vec3(
+            player.position.x + cos(angle1) * radius,
+            player.position.y + sin(angle1 * pointLightVerticalSpeed) * 1.0f,
+            player.position.z + sin(angle1) * radius
         );
     }
     player.update(deltaTime);
@@ -2075,6 +2335,7 @@ void render() {
     }
 
     renderBoundary();
+    renderGroundPlane();
     renderTrails();
 
     // === RENDER LIGHT SOURCES ===
@@ -2171,19 +2432,14 @@ void keyboard(unsigned char key, int x, int y) {
 
     // Toggle point light
     else if (key == 'p' || key == 'P') {
-        static bool pointLightEnabled = true;
-        pointLightEnabled = !pointLightEnabled;
-        if (pointLightEnabled) {
-            pointLight.ambient = Vec3(0.1f, 0.1f, 0.1f);
-            pointLight.diffuse = Vec3(0.8f, 0.8f, 0.6f);
-            pointLight.specular = Vec3(1.0f, 1.0f, 0.8f);
+        static bool pointLightsEnabled = true;
+        pointLightsEnabled = !pointLightsEnabled;
+
+        for (int i = 0; i < numActivePointLights; i++) {
+            pointLights[i].enabled = pointLightsEnabled;
         }
-        else {
-            pointLight.ambient = Vec3(0.0f, 0.0f, 0.0f);
-            pointLight.diffuse = Vec3(0.0f, 0.0f, 0.0f);
-            pointLight.specular = Vec3(0.0f, 0.0f, 0.0f);
-        }
-        std::cout << "Point Light: " << (pointLightEnabled ? "ON" : "OFF") << std::endl;
+
+        std::cout << "Point Lights: " << (pointLightsEnabled ? "ON" : "OFF") << std::endl;
     }
     // Texture debugging
     else if (key == 't' || key == 'T') {
@@ -2212,7 +2468,7 @@ void keyboard(unsigned char key, int x, int y) {
         showNormalMaps = !showNormalMaps;
 
         for (auto model : { &jetModel, &droneModel, &sphereModel, &starModel,
-                          &donutModel, &triangleModel, &riceModel, &himekaModel }) {
+                            &donutModel, &triangleModel, &riceModel, &himekaModel }) {
             model->hasNormalMap = showNormalMaps && (model->normalMapTexture != defaultNormalMap);
         }
 
@@ -2266,13 +2522,45 @@ void timer(int value) {
 void reshape(int width, int height) {
     glViewport(0, 0, width, height);
 }
+void initPointLights() {
+    // 0번: 기존 플레이어를 도는 라이트
+    pointLights[0].ambient = Vec3(0.05f, 0.05f, 0.05f);
+    pointLights[0].diffuse = Vec3(0.8f, 0.8f, 0.6f);
+    pointLights[0].specular = Vec3(1.0f, 1.0f, 0.8f);
+    pointLights[0].constant = 1.0f;
+    pointLights[0].linear = 0.09f;
+    pointLights[0].quadratic = 0.032f;
+    pointLights[0].enabled = true;
 
+    // 1번: 스테이지 왼쪽 위 코너
+    pointLights[1].position = Vec3(-3.0f, 1.5f, 2.5f);
+    pointLights[1].ambient = Vec3(0.03f, 0.03f, 0.05f);
+    pointLights[1].diffuse = Vec3(0.3f, 0.4f, 0.8f);
+    pointLights[1].specular = Vec3(0.6f, 0.7f, 1.0f);
+    pointLights[1].constant = 1.0f;
+    pointLights[1].linear = 0.14f;
+    pointLights[1].quadratic = 0.07f;
+    pointLights[1].enabled = true;
+
+    // 2번: 스테이지 오른쪽 위 코너
+    pointLights[2].position = Vec3(3.0f, 1.5f, 2.5f);
+    pointLights[2].ambient = Vec3(0.05f, 0.03f, 0.03f);
+    pointLights[2].diffuse = Vec3(0.8f, 0.4f, 0.3f);
+    pointLights[2].specular = Vec3(1.0f, 0.7f, 0.6f);
+    pointLights[2].constant = 1.0f;
+    pointLights[2].linear = 0.14f;
+    pointLights[2].quadratic = 0.07f;
+    pointLights[2].enabled = true;
+
+    numActivePointLights = 3;
+}
 void init() {
     glewInit();
     glEnable(GL_DEPTH_TEST);
     glClearColor(0.0f, 0.0f, 0.1f, 1.0f);
 
     initShaders();  // 이 안에서 defaultTexture, defaultNormalMap 생성됨
+    initPointLights();
     loadModels();   // 이 안에서 실제 텍스처 로딩
 
     enemies.push_back(DestructibleEnemy(-1.0f, 1.0f, 0));
