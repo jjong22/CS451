@@ -6,7 +6,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include <string>
+#include <string>d
 #include <algorithm>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
@@ -81,10 +81,10 @@ const float GAME_NEAR = -2.0f;
 const float GAME_FAR = 2.0f;
 
 // Entity sizes
-const float PLAYER_SIZE = 0.30f;
+const float PLAYER_SIZE = 0.10f;
 const float BULLET_SIZE = 0.08f;
 const float ATTACK_SIZE = 0.10f;
-const float ENEMY_SIZE = 0.80f;
+const float ENEMY_SIZE = 0.60f;
 const float ORBIT_SIZE = 0.10f;
 
 // Game constants
@@ -665,7 +665,7 @@ GLuint loadNormalMap(const std::string& filepath) {
 
     int width, height, nrChannels;
     stbi_set_flip_vertically_on_load(true);
-    unsigned char* data = stbi_load(filepath.c_str(), &width, &height, &nrChannels, 0);
+    unsigned char* data = stbi_load(filepath.c_str(), &width, &height, &nrChannels, 3);
 
     if (data) {
         GLenum format;
@@ -1086,7 +1086,7 @@ void main() {
     // Get normal from normal map
     vec3 norm;
     if (uHasNormalMap) {
-        norm = texture(uNormalMap, TexCoord).rgb;
+        norm = texture(uNormalMap, TexCoord * 100.0).rgb;
         norm = norm * 2.0 - 1.0;  // Transform from [0,1] to [-1,1]
         norm = normalize(TBN * norm);
     } else {
@@ -1495,10 +1495,9 @@ public:
 
             // [수정 2] 모델이 앞을 보게 회전 (-90도 베이스) + 움직임에 따른 틸트 애니메이션
             // 기본 -90도(앞) + 위아래 움직임에 따른 기울기(movement.z)
-            targetRotation.x = -90.0f + movement.y * 10.0f; 
-            
-            // 좌우 롤링 (기존 유지)
-            targetRotation.y = -movement.x * 20.0f;  
+            targetRotation.x = 90.0f + movement.y * 10.0f;
+            targetRotation.y = 180.0f;  
+            targetRotation.z = movement.x * 10.0f;
 
             // 트레일 효과 (Trail)
             if (trailEffectEnabled && (int)(gameTime * 30) % 2 == 0) {
@@ -1510,7 +1509,7 @@ public:
         else {
             velocity = Vec3(0, 0, 0);
             // 멈췄을 때도 앞을 보게 유지 (-90도)
-            targetRotation = Vec3(-90.0f, 0, 0); 
+            targetRotation = Vec3(90.0f, 180.0f, 0); 
         }
 
         GameObject::update(deltaTime);
@@ -1669,7 +1668,7 @@ public:
             glm::mat4 parentModel = getModelMatrix();
             glm::mat4 partModel = glm::translate(parentModel, part.localPosition.toGLM());
             partModel = glm::rotate(partModel, glm::radians(part.rotation.y), glm::vec3(0, 1, 0));
-            partModel = glm::scale(partModel, glm::vec3(0.5f, 0.5f, 0.5f));
+            partModel = glm::scale(partModel, glm::vec3(0.3f, 0.3f, 0.3f));
             glm::mat4 mvp = projectionMatrix * viewMatrix * partModel;
 
             float partHealthRatio = part.health / part.maxHealth;
@@ -2237,11 +2236,15 @@ void update(float deltaTime) {
 
             if (attack.active == false) break; // 공격이 이미 파트에 맞아 소멸했다면, 다음 공격으로 넘어감
 
-            // 🌟 B. 파트에 맞지 않았고, 본체와 충돌하는 경우 (후순위)
-            if (!hit_part && attack.checkCollision(enemy)) {
-                // 본체에 직접 피해를 줍니다. (DestructibleEnemy::takeDamage는 이제 필요 없습니다)
+            float enemyBodyHitbox = 0.35f;
+            float distToBody = (attack.position - enemy.position).length();
+
+            if (!hit_part && distToBody < (enemyBodyHitbox + ATTACK_SIZE)) {
+                // 본체에 피해를 입힘
                 enemy.health -= ATTACK_DAMAGE;
                 attack.active = false;
+
+                // 체력 바닥나면 파괴
                 if (enemy.health <= 0) enemy.active = false;
             }
         }
@@ -2360,8 +2363,8 @@ void keyboard(unsigned char key, int x, int y) {
             enemies.push_back(DestructibleEnemy(1.0f, 1.0f, 0));
         }
     }
-    // Shading mode toggle (w key) - Assignment 4
-    else if (key == 'w' || key == 'W') {
+    // Shading mode toggle (o key) - Assignment 4
+    else if (key == 'o' || key == 'O') {
         currentShading = static_cast<ShadingMode>((currentShading + 1) % 3);
         std::string shadingName[] = { "Gouraud", "Phong", "Phong + Normal Map" };
         std::cout << "Shading Mode: " << shadingName[currentShading] << std::endl;
@@ -2545,7 +2548,7 @@ int main(int argc, char** argv) {
     std::cout << "WASD: Move player" << std::endl;
     std::cout << "Space: Shoot" << std::endl;
     std::cout << "\nShading & Lighting:" << std::endl;
-    std::cout << "W: Toggle Shading Mode (Gouraud / Phong / Phong+NormalMap)" << std::endl;
+    std::cout << "O: Toggle Shading Mode (Gouraud / Phong / Phong+NormalMap)" << std::endl;
     std::cout << "L: Toggle Directional Light ON/OFF" << std::endl;
     std::cout << "P: Toggle Point Light ON/OFF" << std::endl;
     std::cout << "\nTexture Controls:" << std::endl;
